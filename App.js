@@ -16,10 +16,10 @@ export default function App() {
       // ملاحظة: يجب وضع ملفات الخطوط الفعلية داخل assets/fonts/
       // Tajawal: https://fonts.google.com/specimen/Tajawal (مجاني - رخصة OFL)
       // Amiri: https://fonts.google.com/specimen/Amiri (مجاني - رخصة OFL)
-      'Tajawal-Regular': require('./assets/fonts/Tajawal-Regular.ttf'),
-      'Tajawal-Medium': require('./assets/fonts/Tajawal-Medium.ttf'),
-      'Tajawal-Bold': require('./assets/fonts/Tajawal-Bold.ttf'),
-      'Amiri-Regular': require('./assets/fonts/Amiri-Regular.ttf'),
+      'Tajawal-Regular': require('./assets/fonts/Tajawal/Tajawal-Regular.ttf'),
+'Tajawal-Medium': require('./assets/fonts/Tajawal/Tajawal-Medium.ttf'),
+'Tajawal-Bold': require('./assets/fonts/Tajawal/Tajawal-Bold.ttf'),
+'Amiri-Regular': require('./assets/fonts/Amiri/Amiri-Regular.ttf'),
     });
     setFontsLoaded(true);
     await SplashScreen.hideAsync();
