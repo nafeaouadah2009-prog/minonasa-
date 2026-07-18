@@ -13,13 +13,13 @@
     "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.yourname.adhkarquran",
+      "bundleIdentifier": "com.nafea.adhkarquran",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "نحتاج موقعك لعرض مواقيت الصلاة واتجاه القبلة الدقيقة لمنطقتك"
       }
     },
     "android": {
-      "package": "com.yourname.adhkarquran",
+      "package": "com.nafea.adhkarquran",
       "adaptiveIcon": {
         "backgroundColor": "#0F1B2D"
       },
