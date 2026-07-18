@@ -8,8 +8,10 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
     "splash": {
-      "backgroundColor": "#0F1B2D"
-    },
+  "image": "./assets/splash-icon.png",
+  "backgroundColor": "#0F1B2D",
+  "resizeMode": "contain"
+}, 
     "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": false,
@@ -21,6 +23,9 @@
     "android": {
       "package": "com.nafea.adhkarquran",
       "adaptiveIcon": {
+  "foregroundImage": "./assets/adaptive-icon.png",
+  "backgroundColor": "#0F1B2D"
+}, 
         "backgroundColor": "#0F1B2D"
       },
       "permissions": ["ACCESS_COARSE_LOCATION", "ACCESS_FINE_LOCATION"]
