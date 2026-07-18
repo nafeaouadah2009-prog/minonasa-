@@ -1,0 +1,41 @@
+{
+  "expo": {
+    "name": "أذكار وقرآن",
+    "slug": "adhkar-quran-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "backgroundColor": "#0F1B2D"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.yourname.adhkarquran",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "نحتاج موقعك لعرض مواقيت الصلاة واتجاه القبلة الدقيقة لمنطقتك"
+      }
+    },
+    "android": {
+      "package": "com.yourname.adhkarquran",
+      "adaptiveIcon": {
+        "backgroundColor": "#0F1B2D"
+      },
+      "permissions": ["ACCESS_COARSE_LOCATION", "ACCESS_FINE_LOCATION"]
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "نحتاج موقعك لعرض مواقيت الصلاة واتجاه القبلة الدقيقة لمنطقتك"
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": ""
+      }
+    }
+  }
+}
