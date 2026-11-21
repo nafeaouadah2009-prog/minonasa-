@@ -17,6 +17,8 @@ import logging
 import math
 import os
 import re
+import sqlite3
+import tempfile
 import time
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
@@ -36,6 +38,7 @@ from aiogram.types import (
     BufferedInputFile,
     CallbackQuery,
     ErrorEvent,
+    FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputMediaPhoto,
@@ -54,6 +57,8 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    and_,
+    case,
     delete,
     desc,
     event,
@@ -96,7 +101,40 @@ DB_URL: Final[str] = f"sqlite+aiosqlite:///{DB_PATH}"
 
 ITEMS_PER_PAGE: Final[int] = 5
 MAX_STORES_PER_USER: Final[int] = 3
+MAX_STORES_VIP: Final[int] = 5
 MAX_PRODUCT_PHOTOS: Final[int] = 3
+
+AD_PACKAGES: Final[dict[str, dict[str, Any]]] = {
+    "basic": {"days": 3, "price": 1000.0, "label": "أساسية (3 أيام)"},
+    "pro": {"days": 7, "price": 2000.0, "label": "احترافية (7 أيام)"},
+    "vip": {"days": 30, "price": 7000.0, "label": "VIP (30 يوم)"},
+}
+
+VIP_PLANS: Final[dict[str, dict[str, Any]]] = {
+    "vip_30": {"days": 30, "price": 3000.0, "label": "👑 باقة VIP شهرية (30 يوم) - 3000 دج"},
+    "vip_90": {"days": 90, "price": 7500.0, "label": "👑 باقة VIP ربع سنوية (90 يوم) - 7500 دج"},
+}
+
+ALGERIA_WILAYAS: Final[dict[str, str]] = {
+    "01": "أدرار", "02": "الشلف", "03": "الأغواط", "04": "أم البواقي", "05": "باتنة",
+    "06": "بجاية", "07": "بسكرة", "08": "بشار", "09": "البليدة", "10": "البويرة",
+    "11": "تمنراست", "12": "تبسة", "13": "تلمسان", "14": "تيارت", "15": "تيزي وزو",
+    "16": "الجزائر", "17": "الجلفة", "18": "جيجل", "19": "سطيف", "20": "سعيدة",
+    "21": "سكيكدة", "22": "سيدي بلعباس", "23": "عنابة", "24": "قالمة", "25": "قسنطينة",
+    "26": "المدية", "27": "مستغانم", "28": "المسيلة", "29": "معسكر", "30": "ورقلة",
+    "31": "وهران", "32": "البيض", "33": "إليزي", "34": "برج بوعريريج", "35": "بومرداس",
+    "36": "الطارف", "37": "تندوف", "38": "تيسمسيلت", "39": "الوادي", "40": "خنشلة",
+    "41": "سوق أهراس", "42": "تيبازة", "43": "ميلة", "44": "عين الدفلى", "45": "النعامة",
+    "46": "عين تموشنت", "47": "غرداية", "48": "غليزان", "49": "تيميمون", "50": "برج باجي مختار",
+    "51": "أولاد جلال", "52": "بني عباس", "53": "عين صالح", "54": "عين قزام", "55": "تقرت",
+    "56": "جانت", "57": "المغير", "58": "المنيعة",
+}
+
+
+def wilaya_label(code: str) -> str:
+    c = (code or "").strip().zfill(2) if (code or "").strip().isdigit() else (code or "").strip()
+    name = ALGERIA_WILAYAS.get(c)
+    return f"{c} - {name}" if name else (code or "-")
 
 MAX_STORE_NAME_LEN: Final[int] = 100
 MAX_STORE_BIO_LEN: Final[int] = 500
@@ -903,6 +941,7 @@ class User(Base):
     saved_name: Mapped[str] = mapped_column(String(100), default="")
     saved_phone: Mapped[str] = mapped_column(String(50), default="")
     saved_address: Mapped[str] = mapped_column(Text, default="")
+    saved_wilaya: Mapped[str] = mapped_column(String(60), default="")
     ad_credits: Mapped[float] = mapped_column(Float, default=0.0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -924,13 +963,39 @@ class Store(Base):
     bio: Mapped[str] = mapped_column(Text, default="")
     logo_file_id: Mapped[str] = mapped_column(String(200), default="")
     delivery_fee: Mapped[float] = mapped_column(Float, default=0.0)
+    default_desk_fee: Mapped[float] = mapped_column(Float, default=0.0)
     verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    vip_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    auto_approve: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     products = relationship("Product", back_populates="store", cascade="all, delete-orphan")
     reviews = relationship("Review", back_populates="store", cascade="all, delete-orphan")
     followers = relationship("StoreFollower", back_populates="store", cascade="all, delete-orphan")
     promos = relationship("PromoCode", back_populates="store", cascade="all, delete-orphan")
+    delivery_rates = relationship("StoreDeliveryRate", back_populates="store", cascade="all, delete-orphan")
+
+
+class StoreDeliveryRate(Base):
+    __tablename__ = "store_delivery_rates"
+    __table_args__ = (
+        UniqueConstraint("store_id", "wilaya_code", name="uq_delivery_store_wilaya"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    store_id: Mapped[int] = mapped_column(ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    wilaya_code: Mapped[str] = mapped_column(String(10), index=True)
+    home_fee: Mapped[float] = mapped_column(Float, default=0.0)
+    desk_fee: Mapped[float] = mapped_column(Float, default=0.0)
+
+    store = relationship("Store", back_populates="delivery_rates")
+
+
+class AppSetting(Base):
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
 
 
 class Category(Base):
@@ -1011,9 +1076,13 @@ class Order(Base):
     buyer_tg_id: Mapped[int] = mapped_column(BigInteger, index=True)
     buyer_name: Mapped[str] = mapped_column(String(100))
     buyer_phone: Mapped[str] = mapped_column(String(50))
+    buyer_wilaya: Mapped[str] = mapped_column(String(60), default="")
     buyer_address: Mapped[str] = mapped_column(Text)
     buyer_note: Mapped[str] = mapped_column(Text, default="")
     variation: Mapped[str] = mapped_column(String(100), default="")
+    quantity: Mapped[int] = mapped_column(Integer, default=1)
+    delivery_type: Mapped[str] = mapped_column(String(20), default="home")
+    tracking_info: Mapped[str] = mapped_column(String(300), default="")
     price: Mapped[float] = mapped_column(Float)
     delivery_fee: Mapped[float] = mapped_column(Float, default=0.0)
     status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
@@ -1063,6 +1132,7 @@ class CartItem(Base):
     user_tg_id: Mapped[int] = mapped_column(BigInteger, index=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), index=True)
     variation: Mapped[str] = mapped_column(String(100), default="")
+    quantity: Mapped[int] = mapped_column(Integer, default=1)
     reminded: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -1163,6 +1233,7 @@ class AdRequest(Base):
     target_id: Mapped[int] = mapped_column(Integer)
     package_name: Mapped[str] = mapped_column(String(50))
     price: Mapped[float] = mapped_column(Float)
+    payment_proof: Mapped[str] = mapped_column(String(200), default="")
     status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -1170,10 +1241,20 @@ class AdRequest(Base):
 async def _ensure_schema_columns(conn) -> None:
     """Safely add new columns if upgrading an existing market_v10.db file."""
     migrations = [
+        ("users", "saved_wilaya", "VARCHAR(60) DEFAULT ''"),
+        ("stores", "default_desk_fee", "FLOAT DEFAULT 0.0"),
+        ("stores", "vip_until", "DATETIME"),
+        ("stores", "auto_approve", "BOOLEAN DEFAULT 0"),
         ("products", "is_deleted", "BOOLEAN DEFAULT 0"),
+        ("cart_items", "quantity", "INTEGER DEFAULT 1"),
         ("orders", "store_id", "INTEGER"),
         ("orders", "product_title", "VARCHAR(200) DEFAULT ''"),
         ("orders", "product_currency", f"VARCHAR(10) DEFAULT '{DEFAULT_CURRENCY}'"),
+        ("orders", "quantity", "INTEGER DEFAULT 1"),
+        ("orders", "buyer_wilaya", "VARCHAR(60) DEFAULT ''"),
+        ("orders", "delivery_type", "VARCHAR(20) DEFAULT 'home'"),
+        ("orders", "tracking_info", "VARCHAR(300) DEFAULT ''"),
+        ("ad_requests", "payment_proof", "VARCHAR(200) DEFAULT ''"),
     ]
     for table, col, ddl in migrations:
         res = await conn.execute(sql_text(f"PRAGMA table_info({table})"))
@@ -1194,6 +1275,9 @@ async def init_db() -> async_sessionmaker:
     @event.listens_for(_engine.sync_engine, "connect")
     def _set_sqlite_pragma(dbapi_conn, _connection_record):
         cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
@@ -1325,17 +1409,41 @@ class EditStoreFSM(StatesGroup):
 
 
 class EditProductFSM(StatesGroup):
+    title = State()
     price = State()
     desc = State()
     stock = State()
+    category = State()
+    photo_upload = State()
 
 
 class OrderFSM(StatesGroup):
     name = State()
     phone = State()
+    wilaya = State()
+    delivery_type = State()
     address = State()
     note = State()
     promo = State()
+
+
+class DeliveryRateFSM(StatesGroup):
+    default_home = State()
+    default_desk = State()
+    wilaya_rate = State()
+
+
+class OrderShipFSM(StatesGroup):
+    tracking = State()
+
+
+class WalletTopupFSM(StatesGroup):
+    custom_amount = State()
+    proof = State()
+
+
+class AdminChannelFSM(StatesGroup):
+    channel_id = State()
 
 
 class BroadcastFSM(StatesGroup):
@@ -1391,6 +1499,10 @@ class BotAdFSM(StatesGroup):
 class ProductAdFSM(StatesGroup):
     select_product = State()
     select_package = State()
+    payment_proof = State()
+
+
+class StoreVipFSM(StatesGroup):
     payment_proof = State()
 
 
@@ -1536,6 +1648,188 @@ def back_kb(lang: str, callback: str = "menu:home") -> InlineKeyboardMarkup:
     )
 
 
+def is_store_vip(store: Optional[Store]) -> bool:
+    return bool(store and store.vip_until and store.vip_until > utcnow())
+
+
+def store_badges(store: Optional[Store], lang: str) -> str:
+    if not store:
+        return ""
+    parts = []
+    if is_store_vip(store):
+        parts.append("👑")
+    if store.verified or is_store_vip(store):
+        parts.append(t(lang, "verified_badge"))
+    return " ".join(parts)
+
+
+async def user_max_stores(tg_id: int) -> int:
+    stores = await get_stores_by_owner(tg_id)
+    if any(is_store_vip(st) for st in stores):
+        return MAX_STORES_VIP
+    return MAX_STORES_PER_USER
+
+
+async def get_setting(key: str, default: str = "") -> str:
+    async with Session() as s:
+        row = await s.get(AppSetting, key)
+        return row.value if row else default
+
+
+async def set_setting(key: str, value: str) -> None:
+    async with Session() as s:
+        row = await s.get(AppSetting, key)
+        if row:
+            row.value = value
+        else:
+            s.add(AppSetting(key=key, value=value))
+        await s.commit()
+
+
+async def calculate_delivery_fee(
+    s,
+    store_id: int,
+    product_delivery_fee: float,
+    wilaya_code: str,
+    delivery_type: str,
+) -> float:
+    """Compute delivery fee: StoreDeliveryRate(wilaya) -> Store default -> Product delivery_fee."""
+    code = (wilaya_code or "").strip().zfill(2) if (wilaya_code or "").strip().isdigit() else ""
+    if code:
+        rate = (
+            await s.execute(
+                select(StoreDeliveryRate).where(
+                    StoreDeliveryRate.store_id == store_id,
+                    StoreDeliveryRate.wilaya_code == code,
+                )
+            )
+        ).scalar_one_or_none()
+        if rate:
+            return float(rate.desk_fee if delivery_type == "desk" else rate.home_fee)
+    store = await s.get(Store, store_id)
+    if store:
+        if delivery_type == "desk" and store.default_desk_fee > 0:
+            return float(store.default_desk_fee)
+        if delivery_type == "home" and store.delivery_fee > 0:
+            return float(store.delivery_fee)
+    return float(product_delivery_fee or 0.0)
+
+
+def build_wilaya_kb(page: int, prefix: str, select_prefix: str, back_cb: str, lang: str) -> InlineKeyboardMarkup:
+    """Paginated 58 Algeria Wilayas keyboard (12 per page in 2 columns)."""
+    codes = sorted(ALGERIA_WILAYAS.keys())
+    per_page = 12
+    total_pages = max(1, math.ceil(len(codes) / per_page))
+    page = max(1, min(page, total_pages))
+    chunk = codes[(page - 1) * per_page : page * per_page]
+    kb = []
+    for i in range(0, len(chunk), 2):
+        row = []
+        for code in chunk[i : i + 2]:
+            row.append(
+                InlineKeyboardButton(
+                    text=f"{code} - {ALGERIA_WILAYAS[code]}",
+                    callback_data=f"{select_prefix}:{code}",
+                )
+            )
+        kb.append(row)
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text=t(lang, "btn_prev"), callback_data=f"{prefix}:{page - 1}"))
+    nav.append(InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="ignore"))
+    if page < total_pages:
+        nav.append(InlineKeyboardButton(text=t(lang, "btn_next"), callback_data=f"{prefix}:{page + 1}"))
+    kb.append(nav)
+    kb.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=back_cb)])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def _create_sqlite_backup_sync(src_path: str) -> str:
+    """Consistent online SQLite backup safe under WAL mode."""
+    ts = utcnow().strftime("%Y%m%d_%H%M%S")
+    dst_path = os.path.join(tempfile.gettempdir(), f"market_backup_{ts}.db")
+    src_conn = sqlite3.connect(src_path)
+    dst_conn = sqlite3.connect(dst_path)
+    try:
+        src_conn.backup(dst_conn)
+    finally:
+        dst_conn.close()
+        src_conn.close()
+    return dst_path
+
+
+async def send_backup_to_admins(bot: Bot, target_chat_id: Optional[int] = None, auto: bool = False) -> bool:
+    if not os.path.exists(DB_PATH):
+        return False
+    backup_path = ""
+    try:
+        backup_path = await asyncio.to_thread(_create_sqlite_backup_sync, DB_PATH)
+        size_kb = os.path.getsize(backup_path) / 1024.0
+        caption = (
+            f"💾 <b>{'نسخة احتياطية يومية تلقائية' if auto else 'نسخة احتياطية لقاعدة البيانات'}</b>\n"
+            f"📅 {utcnow().strftime('%Y-%m-%d %H:%M')} UTC\n"
+            f"📦 الحجم: {size_kb:.1f} KB"
+        )
+        recipients = [target_chat_id] if target_chat_id else list(ADMIN_IDS)
+        for chat_id in recipients:
+            with suppress(Exception):
+                await bot.send_document(
+                    chat_id,
+                    FSInputFile(backup_path, filename=os.path.basename(backup_path)),
+                    caption=caption,
+                )
+        return True
+    except Exception as e:
+        logger.exception(f"DB backup failed: {e}")
+        return False
+    finally:
+        if backup_path and os.path.exists(backup_path):
+            with suppress(Exception):
+                os.remove(backup_path)
+
+
+async def publish_product_to_channel(bot: Bot, product_id: int) -> bool:
+    """Auto-publish approved product to configured platform Telegram channel."""
+    channel_id = (await get_setting("auto_channel_id", "")).strip()
+    if not channel_id:
+        return False
+    async with Session() as s:
+        p = (
+            await s.execute(select(Product).where(Product.id == product_id, Product.is_deleted.is_(False)))
+        ).scalar_one_or_none()
+        if not p or p.status != "approved":
+            return False
+        store = await s.get(Store, p.store_id)
+        cat = await s.get(Category, p.category_id) if p.category_id else None
+    badge = store_badges(store, "ar")
+    store_name = f"{esc(store.name)} {badge}".strip() if store else "-"
+    cat_line = f"\n📂 التصنيف: {esc(cat.name_ar)}" if cat else ""
+    caption = (
+        f"🆕 <b>{esc(p.title)}</b>\n\n"
+        f"{esc((p.description or '')[:400])}\n\n"
+        f"💰 السعر: <b>{_current_price(p):g} {esc(p.currency)}</b>\n"
+        f"🚚 التوصيل: {p.delivery_fee:g} {esc(p.currency)}{cat_line}\n"
+        f"🏪 المتجر: {store_name}"
+    )
+    deep_url = f"https://t.me/{BOT_USERNAME}?start=prod_{p.id}" if BOT_USERNAME else ""
+    kb = (
+        InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="🛒 عرض وطلب المنتج الآن", url=deep_url)]]
+        )
+        if deep_url
+        else None
+    )
+    try:
+        if p.photo_file_id:
+            await bot.send_photo(channel_id, photo=p.photo_file_id, caption=caption[:1024], reply_markup=kb)
+        else:
+            await bot.send_message(channel_id, caption, reply_markup=kb)
+        return True
+    except Exception as e:
+        logger.warning(f"Auto-post to channel {channel_id} failed for product #{product_id}: {e}")
+        return False
+
+
 def build_pagination_kb(items, page: int, prefix: str, lang: str, extra_buttons=None) -> InlineKeyboardMarkup:
     extra_buttons = extra_buttons or []
     total_pages = max(1, math.ceil(len(items) / ITEMS_PER_PAGE))
@@ -1555,6 +1849,35 @@ def build_pagination_kb(items, page: int, prefix: str, lang: str, extra_buttons=
     if nav:
         kb.append(nav)
     for b in extra_buttons:
+        kb.append([b])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def build_sql_pagination_kb(
+    page_items: list[tuple[str, str]],
+    page: int,
+    total_count: int,
+    prefix: str,
+    lang: str,
+    top_rows: Optional[list[list[InlineKeyboardButton]]] = None,
+    extra_buttons: Optional[list[InlineKeyboardButton]] = None,
+) -> InlineKeyboardMarkup:
+    """True SQL LIMIT/OFFSET pagination keyboard with optional top filter rows."""
+    kb: list[list[InlineKeyboardButton]] = list(top_rows or [])
+    total_pages = max(1, math.ceil(total_count / ITEMS_PER_PAGE))
+    page = max(1, min(page, total_pages))
+    for label, cb in page_items:
+        kb.append([InlineKeyboardButton(text=label, callback_data=cb)])
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text=t(lang, "btn_prev"), callback_data=f"{prefix}:{page - 1}"))
+    if total_pages > 1:
+        nav.append(InlineKeyboardButton(text=t(lang, "page_info", current=page, total=total_pages), callback_data="ignore"))
+    if page < total_pages:
+        nav.append(InlineKeyboardButton(text=t(lang, "btn_next"), callback_data=f"{prefix}:{page + 1}"))
+    if nav:
+        kb.append(nav)
+    for b in (extra_buttons or []):
         kb.append([b])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
@@ -1588,7 +1911,8 @@ def _buyer_menu_kb(lang: str) -> InlineKeyboardMarkup:
 
 def _account_menu_kb(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t(lang, "btn_profile"), callback_data="nav:profile")],
+        [InlineKeyboardButton(text=t(lang, "btn_profile"), callback_data="nav:profile"),
+         InlineKeyboardButton(text="💳 محفظتي (الرصيد)", callback_data="nav:wallet")],
         [InlineKeyboardButton(text=t(lang, "btn_my_orders"), callback_data="nav:orders"),
          InlineKeyboardButton(text=t(lang, "btn_favorites"), callback_data="nav:favs")],
         [InlineKeyboardButton(text=t(lang, "btn_support"), callback_data="nav:support"),
@@ -1611,11 +1935,22 @@ async def show_public_store(target_msg: Message, store_id: int, lang: str, page:
         store = (await s.execute(select(Store).where(Store.id == store_id))).scalar_one_or_none()
         if not store:
             return await target_msg.answer(t(lang, "no_products"))
+        total = (
+            await s.execute(
+                select(func.count(Product.id)).where(
+                    Product.store_id == store_id, Product.status == "approved", Product.is_deleted.is_(False)
+                )
+            )
+        ).scalar() or 0
+        total_pages = max(1, math.ceil(total / ITEMS_PER_PAGE))
+        page = max(1, min(page, total_pages))
         products = (
             await s.execute(
                 select(Product)
                 .where(Product.store_id == store_id, Product.status == "approved", Product.is_deleted.is_(False))
                 .order_by(nullslast(Product.featured_until.desc()), Product.created_at.desc())
+                .limit(ITEMS_PER_PAGE)
+                .offset((page - 1) * ITEMS_PER_PAGE)
             )
         ).scalars().all()
         rating = await get_store_rating(store.id, s)
@@ -1626,7 +1961,7 @@ async def show_public_store(target_msg: Message, store_id: int, lang: str, page:
             )
         ).scalar_one_or_none()
     bio = esc(store.bio) if store.bio else "لا يوجد وصف."
-    badge = t(lang, "verified_badge") if store.verified else ""
+    badge = store_badges(store, lang)
     if is_deeplink:
         text = t(lang, "store_welcome_deeplink", name=esc(store.name), badge=badge, store_bio=bio, rating=rating)
     else:
@@ -1639,9 +1974,9 @@ async def show_public_store(target_msg: Message, store_id: int, lang: str, page:
         extra.append(InlineKeyboardButton(text=t(lang, "btn_follow"), callback_data=f"fol_add:{store.id}"))
     extra.append(InlineKeyboardButton(text=t(lang, "btn_report_store"), callback_data=f"rep_store:{store.id}"))
     extra.append(InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:buyer"))
-    kb = build_pagination_kb(items, page, f"pubstore:{store.id}", lang, extra)
+    kb = build_sql_pagination_kb(items, page, total, f"pubstore:{store.id}", lang, extra_buttons=extra)
     if store.logo_file_id:
-        await target_msg.answer_photo(photo=store.logo_file_id, caption=text, reply_markup=kb)
+        await target_msg.answer_photo(photo=store.logo_file_id, caption=text[:1024], reply_markup=kb)
     else:
         await target_msg.answer(text, reply_markup=kb)
 
@@ -1651,6 +1986,7 @@ async def send_store_dashboard(msg_obj, store_id: int, lang: str):
         store = await s.get(Store, store_id)
         if not store:
             return
+        u = await ensure_user(s, store.owner_tg_id, lang)
         pcount = (
             await s.execute(
                 select(func.count(Product.id)).where(Product.store_id == store.id, Product.is_deleted.is_(False))
@@ -1664,8 +2000,20 @@ async def send_store_dashboard(msg_obj, store_id: int, lang: str):
         fcount = (await s.execute(select(func.count(StoreFollower.id)).where(StoreFollower.store_id == store.id))).scalar()
         rating = await get_store_rating(store.id, s)
         total_stores = (await s.execute(select(func.count(Store.id)).where(Store.owner_tg_id == store.owner_tg_id))).scalar()
-    badge = t(lang, "verified_badge") if store.verified else ""
-    text = t(lang, "store_welcome", name=esc(store.name), badge=badge, products=pcount, views=vcount, followers=fcount, rating=rating)
+        credits = float(u.ad_credits or 0.0)
+    vip_active = is_store_vip(store)
+    max_allowed = MAX_STORES_VIP if vip_active else MAX_STORES_PER_USER
+    badge = store_badges(store, lang)
+    vip_line = ""
+    if vip_active:
+        vip_line = f"\n👑 <b>متجر VIP نشط حتى:</b> {store.vip_until.strftime('%Y-%m-%d')} (نشر مباشر ✅)"
+    elif store.auto_approve:
+        vip_line = "\n⚡ <b>النشر المباشر مفعّل</b>"
+    text = (
+        t(lang, "store_welcome", name=esc(store.name), badge=badge, products=pcount, views=vcount, followers=fcount, rating=rating)
+        + f"\n💳 <b>رصيد المحفظة:</b> {credits:g} {DEFAULT_CURRENCY}"
+        + vip_line
+    )
     kb = [
         [InlineKeyboardButton(text=t(lang, "btn_add_product"), callback_data=f"st_add:{store.id}")],
         [InlineKeyboardButton(text=t(lang, "btn_my_products"), callback_data=f"st_list:{store.id}:1"),
@@ -1673,16 +2021,18 @@ async def send_store_dashboard(msg_obj, store_id: int, lang: str):
         [InlineKeyboardButton(text=t(lang, "btn_flash_sale"), callback_data=f"st_flash:{store.id}"),
          InlineKeyboardButton(text=t(lang, "btn_promos"), callback_data=f"st_promos:{store.id}")],
         [InlineKeyboardButton(text=t(lang, "btn_buy_product_ad"), callback_data=f"st_buy_ad:{store.id}"),
+         InlineKeyboardButton(text="👑 باقة VIP", callback_data=f"st_vip:{store.id}")],
+        [InlineKeyboardButton(text=f"💳 محفظتي ({credits:g} دج)", callback_data=f"st_wallet:{store.id}"),
          InlineKeyboardButton(text=t(lang, "btn_my_stats"), callback_data=f"st_stats:{store.id}")],
         [InlineKeyboardButton(text=t(lang, "btn_share"), callback_data=f"st_share:{store.id}"),
          InlineKeyboardButton(text=t(lang, "btn_seller_broadcast"), callback_data=f"st_broadcast:{store.id}")],
         [InlineKeyboardButton(text=t(lang, "btn_settings"), callback_data=f"st_settings:{store.id}"),
          InlineKeyboardButton(text=t(lang, "btn_seller_guide"), callback_data=f"st_guide:{store.id}")],
     ]
-    if total_stores < MAX_STORES_PER_USER:
+    if total_stores < max_allowed:
         kb.append([InlineKeyboardButton(text=t(lang, "add_new_store"), callback_data="nav:become_seller")])
     else:
-        kb.append([InlineKeyboardButton(text=t(lang, "max_stores_reached"), callback_data="ignore")])
+        kb.append([InlineKeyboardButton(text=f"⚠️ الحد الأقصى ({max_allowed} متاجر)", callback_data="ignore")])
     kb.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="menu:home")])
     await msg_obj.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
@@ -1703,6 +2053,8 @@ async def _build_admin_panel_kb(lang: str) -> InlineKeyboardMarkup:
          InlineKeyboardButton(text=t(lang, "btn_global_stats"), callback_data="admin:gstats")],
         [InlineKeyboardButton(text=f"{t(lang, 'btn_manage_bot_ads')} ({bads})", callback_data="admin:botads"),
          InlineKeyboardButton(text=f"{t(lang, 'btn_manage_ad_requests')} ({adreqs})", callback_data="admin:adreqs")],
+        [InlineKeyboardButton(text="📢 قناة النشر التلقائي", callback_data="admin:channel"),
+         InlineKeyboardButton(text="💾 نسخ احتياطي", callback_data="admin:backup")],
         [InlineKeyboardButton(text=t(lang, "btn_broadcast"), callback_data="admin:broadcast")],
         [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="menu:home")],
     ])
@@ -1715,6 +2067,18 @@ async def _build_admin_panel_kb(lang: str) -> InlineKeyboardMarkup:
 @buyer_router.message(CommandStart(deep_link=True))
 async def cmd_start_deeplink(message: Message, command: CommandObject, state: FSMContext):
     args = command.args or ""
+    if args.startswith("prod_"):
+        pid_str = args[len("prod_"):]
+        if pid_str.isdigit():
+            try:
+                async with Session() as s:
+                    await ensure_user(s, message.from_user.id, DEFAULT_LANG)
+                    await s.commit()
+                lang = await get_lang(message.from_user.id)
+                if await send_product_card(message, int(pid_str), message.from_user.id, lang):
+                    return
+            except Exception as e:
+                logger.error(f"Product deep link error: {e}")
     if args.startswith("store_"):
         try:
             identifier = args[len("store_"):]
@@ -1844,6 +2208,8 @@ async def nav_callback_handler(cb: CallbackQuery, state: FSMContext):
     lang = await get_lang(uid)
     if action == "profile":
         await view_profile_for_user(cb.message, uid)
+    elif action == "wallet":
+        await view_wallet_for_user(cb.message, uid, back_cb="nav:account")
     elif action == "favs":
         await my_favs_for_user(cb.message, uid)
     elif action == "top_stores":
@@ -1879,8 +2245,9 @@ async def nav_callback_handler(cb: CallbackQuery, state: FSMContext):
         return
     elif action == "become_seller":
         stores = await get_stores_by_owner(uid)
-        if len(stores) >= MAX_STORES_PER_USER:
-            await cb.answer("❌ وصلت للحد الأقصى (3 متاجر).", show_alert=True)
+        max_stores = await user_max_stores(uid)
+        if len(stores) >= max_stores:
+            await cb.answer(f"❌ وصلت للحد الأقصى ({max_stores} متاجر).", show_alert=True)
             return
         await state.set_state(CreateStore.name)
         await cb.message.answer(t(lang, "store_create_prompt"), reply_markup=ReplyKeyboardRemove())
@@ -2175,6 +2542,146 @@ async def save_profile_address(message: Message, state: FSMContext):
     await state.clear()
 
 
+# ─── Wallet & Ad Credits Top-up ───
+
+async def view_wallet_for_user(target_msg: Message, uid: int, back_cb: str = "nav:account"):
+    lang = await get_lang(uid)
+    async with Session() as s:
+        u = await ensure_user(s, uid, lang)
+        await s.commit()
+        bal = float(u.ad_credits or 0.0)
+        pending_topups = (
+            await s.execute(
+                select(func.count(AdRequest.id)).where(
+                    AdRequest.user_tg_id == uid,
+                    AdRequest.ad_type == "wallet_topup",
+                    AdRequest.status == "pending",
+                )
+            )
+        ).scalar() or 0
+    pending_line = f"\n⏳ طلبات شحن قيد المراجعة: <b>{pending_topups}</b>" if pending_topups else ""
+    text = (
+        f"💳 <b>محفظتي (رصيد الترويج و VIP)</b>\n\n"
+        f"💰 الرصيد المتاح: <b>{bal:g} {DEFAULT_CURRENCY}</b>{pending_line}\n\n"
+        f"💡 يمكنك استخدام الرصيد لتفعيل إعلانات المنتجات وباقات VIP للمتاجر <b>بشكل فوري</b> دون انتظار مراجعة وصل الدفع!"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ شحن الرصيد الآن", callback_data="wallet:topup")],
+        [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=back_cb)],
+    ])
+    await target_msg.answer(text, reply_markup=kb)
+
+
+@buyer_router.callback_query(F.data == "wallet:topup")
+async def wallet_topup_menu(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    lang = await get_lang(cb.from_user.id)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=f"1000 {DEFAULT_CURRENCY}", callback_data="wallet:amt:1000"),
+            InlineKeyboardButton(text=f"2000 {DEFAULT_CURRENCY}", callback_data="wallet:amt:2000"),
+        ],
+        [
+            InlineKeyboardButton(text=f"5000 {DEFAULT_CURRENCY}", callback_data="wallet:amt:5000"),
+            InlineKeyboardButton(text=f"10000 {DEFAULT_CURRENCY}", callback_data="wallet:amt:10000"),
+        ],
+        [InlineKeyboardButton(text="✏️ مبلغ مخصص", callback_data="wallet:amt:custom")],
+        [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:wallet")],
+    ])
+    text = (
+        "💳 <b>شحن المحفظة</b>\n\n"
+        "اختر المبلغ الذي تريد شحنه ثم أرسل صورة وصل الدفع (CCP / BaridiMob):"
+    )
+    try:
+        await cb.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb)
+    await cb.answer()
+
+
+@buyer_router.callback_query(F.data.startswith("wallet:amt:"))
+async def wallet_topup_amount_cb(cb: CallbackQuery, state: FSMContext):
+    val = cb.data.split(":")[2]
+    lang = await get_lang(cb.from_user.id)
+    if val == "custom":
+        await state.set_state(WalletTopupFSM.custom_amount)
+        await cb.message.answer(f"✏️ أرسل المبلغ الذي تريد شحنه ({DEFAULT_CURRENCY}) — الحد الأدنى 500:")
+        return await cb.answer()
+    amt = float(val)
+    await state.update_data(topup_amount=amt)
+    await state.set_state(WalletTopupFSM.proof)
+    await cb.message.answer(
+        f"💳 <b>شحن رصيد: {amt:g} {DEFAULT_CURRENCY}</b>\n\n"
+        f"{t(lang, 'ad_payment_instructions', price=f'{amt:g}')}"
+    )
+    await cb.answer()
+
+
+@buyer_router.message(WalletTopupFSM.custom_amount)
+async def wallet_topup_custom_amount(message: Message, state: FSMContext):
+    lang = await get_lang(message.from_user.id)
+    try:
+        amt = float((message.text or "").replace(",", ".").strip())
+        if amt < 500 or amt > 1_000_000:
+            raise ValueError()
+    except ValueError:
+        return await message.answer("❌ يرجى إدخال مبلغ صحيح بين 500 و 1,000,000.")
+    await state.update_data(topup_amount=amt)
+    await state.set_state(WalletTopupFSM.proof)
+    await message.answer(
+        f"💳 <b>شحن رصيد: {amt:g} {DEFAULT_CURRENCY}</b>\n\n"
+        f"{t(lang, 'ad_payment_instructions', price=f'{amt:g}')}"
+    )
+
+
+@buyer_router.message(WalletTopupFSM.proof, F.photo)
+async def wallet_topup_receive_proof(message: Message, state: FSMContext):
+    lang = await get_lang(message.from_user.id)
+    data = await state.get_data()
+    amt = float(data.get("topup_amount", 0))
+    await state.clear()
+    if amt <= 0:
+        return await message.answer(t(lang, "cancelled"), reply_markup=await get_main_kb(message.from_user.id, lang))
+    photo_id = message.photo[-1].file_id
+    async with Session() as s:
+        req = AdRequest(
+            user_tg_id=message.from_user.id,
+            ad_type="wallet_topup",
+            target_id=0,
+            package_name=f"topup_{int(amt)}",
+            price=amt,
+            payment_proof=photo_id,
+            status="pending",
+        )
+        s.add(req)
+        await s.commit()
+        await s.refresh(req)
+        req_id = req.id
+    await message.answer(
+        f"✅ <b>تم إرسال طلب شحن المحفظة (#{req_id}) بنجاح!</b>\n"
+        f"💰 المبلغ: <b>{amt:g} {DEFAULT_CURRENCY}</b>\n"
+        f"⏳ سيتم إضافة الرصيد لمحفظتك فور تأكيد الإدارة للوصل.",
+        reply_markup=await get_main_kb(message.from_user.id, lang),
+    )
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ تأكيد وشحن الرصيد", callback_data=f"admin:confirm_payment:{req_id}"),
+        InlineKeyboardButton(text="❌ رفض الطلب", callback_data=f"admin:reject_payment:{req_id}"),
+    ]])
+    await notify_admins(
+        message.bot,
+        f"💳 <b>طلب شحن محفظة جديد #{req_id}</b>\n"
+        f"👤 المستخدم: {esc(message.from_user.full_name)} (<code>{message.from_user.id}</code>)\n"
+        f"💰 المبلغ المطلوب: <b>{amt:g} {DEFAULT_CURRENCY}</b>",
+        reply_markup=admin_kb,
+        photo=photo_id,
+    )
+
+
+@buyer_router.message(WalletTopupFSM.proof, ~F.photo)
+async def wallet_topup_proof_invalid(message: Message):
+    await message.answer("📸 يرجى إرسال صورة وصل الدفع (أو /cancel للإلغاء).")
+
+
 # ─── Support Tickets ───
 
 async def support_menu_for_user(target_msg: Message, uid: int):
@@ -2342,17 +2849,39 @@ async def ticket_reply_save(message: Message, state: FSMContext):
 
 # ─── Buyer Orders ───
 
+async def _fetch_buyer_orders_page(uid: int, page: int, lang: str):
+    async with Session() as s:
+        total = (
+            await s.execute(select(func.count(Order.id)).where(Order.buyer_tg_id == uid))
+        ).scalar() or 0
+        total_pages = max(1, math.ceil(total / ITEMS_PER_PAGE))
+        page = max(1, min(page, total_pages))
+        orders = (
+            await s.execute(
+                select(Order)
+                .where(Order.buyer_tg_id == uid)
+                .order_by(Order.created_at.desc())
+                .limit(ITEMS_PER_PAGE)
+                .offset((page - 1) * ITEMS_PER_PAGE)
+            )
+        ).scalars().all()
+    status_icons = {"pending": "⏳", "shipped": "🚚", "completed": "✅", "cancelled": "❌"}
+    items = [
+        (f"{status_icons.get(o.status, '')} طلب #{o.id} (×{o.quantity or 1}) - {o.buyer_name}", f"b_ord_view:{o.id}")
+        for o in orders
+    ]
+    kb = build_sql_pagination_kb(
+        items, page, total, "b_ord_pg", lang,
+        extra_buttons=[InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:account")],
+    )
+    return total, kb
+
+
 async def buyer_orders_for_user(target_msg: Message, uid: int):
     lang = await get_lang(uid)
-    async with Session() as s:
-        orders = (
-            await s.execute(select(Order).where(Order.buyer_tg_id == uid).order_by(Order.created_at.desc()))
-        ).scalars().all()
-    if not orders:
+    total, kb = await _fetch_buyer_orders_page(uid, 1, lang)
+    if total == 0:
         return await target_msg.answer(t(lang, "buyer_orders_empty"), reply_markup=back_kb(lang, "nav:account"))
-    status_icons = {"pending": "⏳", "shipped": "🚚", "completed": "✅", "cancelled": "❌"}
-    items = [(f"{status_icons.get(o.status, '')} طلب #{o.id} - {o.buyer_name}", f"b_ord_view:{o.id}") for o in orders]
-    kb = build_pagination_kb(items, 1, "b_ord_pg", lang, [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:account")])
     await target_msg.answer(t(lang, "buyer_orders_list"), reply_markup=kb)
 
 
@@ -2365,13 +2894,7 @@ async def buyer_orders_list(message: Message):
 async def buyer_orders_pg(cb: CallbackQuery):
     lang = await get_lang(cb.from_user.id)
     page = int(cb.data.split(":")[1])
-    async with Session() as s:
-        orders = (
-            await s.execute(select(Order).where(Order.buyer_tg_id == cb.from_user.id).order_by(Order.created_at.desc()))
-        ).scalars().all()
-    status_icons = {"pending": "⏳", "shipped": "🚚", "completed": "✅", "cancelled": "❌"}
-    items = [(f"{status_icons.get(o.status, '')} طلب #{o.id} - {o.buyer_name}", f"b_ord_view:{o.id}") for o in orders]
-    kb = build_pagination_kb(items, page, "b_ord_pg", lang, [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:account")])
+    _total, kb = await _fetch_buyer_orders_page(cb.from_user.id, page, lang)
     with suppress(Exception):
         await cb.message.edit_reply_markup(reply_markup=kb)
     await cb.answer()
@@ -2397,6 +2920,13 @@ async def buyer_order_details(cb: CallbackQuery):
         "cancelled": t(lang, "status_cancelled"),
     }
     date_str = o.created_at.strftime("%Y-%m-%d %H:%M")
+    dtype_label = "🏢 مكتب التوصيل (Stop Desk)" if o.delivery_type == "desk" else "🏠 باب المنزل"
+    extras = [f"🔢 الكمية: <b>{o.quantity or 1}</b>"]
+    if o.buyer_wilaya:
+        extras.append(f"🗺️ الولاية: <b>{esc(wilaya_label(o.buyer_wilaya))}</b>")
+    extras.append(f"🚚 نوع التوصيل: {dtype_label}")
+    if o.tracking_info:
+        extras.append(f"🔎 رقم/معلومات التتبع: <code>{esc(o.tracking_info)}</code>")
     text = t(
         lang,
         "buyer_order_details",
@@ -2407,7 +2937,7 @@ async def buyer_order_details(cb: CallbackQuery):
         delivery=f"{o.delivery_fee:g} {p_curr}",
         status=status_map.get(o.status, o.status),
         date=date_str,
-    )
+    ) + "\n" + "\n".join(extras)
     await cb.message.answer(text, reply_markup=back_kb(lang, "nav:account"))
     await cb.answer()
 
@@ -2437,17 +2967,27 @@ async def cart_add(cb: CallbackQuery):
             return await cb.answer("⚠️ نفدت الكمية.", show_alert=True)
         vars_list = _product_vars(p)
         if vars_list:
-            # Use index in callback_data to stay well within Telegram's 64-byte limit
             kb = [[InlineKeyboardButton(text=v, callback_data=f"cart_var:{pid}:{idx}")] for idx, v in enumerate(vars_list)]
             await cb.message.answer(t(lang, "var_select_prompt"), reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
             await cb.answer()
             return
-    try:
-        async with Session() as s:
-            s.add(CartItem(user_tg_id=cb.from_user.id, product_id=pid, variation=""))
-            await s.commit()
-    except IntegrityError:
-        pass
+        existing = (
+            await s.execute(
+                select(CartItem).where(
+                    CartItem.user_tg_id == cb.from_user.id,
+                    CartItem.product_id == pid,
+                    CartItem.variation == "",
+                )
+            )
+        ).scalar_one_or_none()
+        if existing:
+            if existing.quantity < p.stock_quantity:
+                existing.quantity += 1
+                await s.commit()
+                return await cb.answer(f"✅ تمت زيادة الكمية في السلة (الكمية: {existing.quantity})", show_alert=True)
+            return await cb.answer(f"⚠️ أقصى كمية متوفرة في المخزون هي {p.stock_quantity}.", show_alert=True)
+        s.add(CartItem(user_tg_id=cb.from_user.id, product_id=pid, variation="", quantity=1))
+        await s.commit()
     await cb.answer(t(lang, "cart_added"), show_alert=True)
 
 
@@ -2458,29 +2998,45 @@ async def cart_add_var(cb: CallbackQuery):
     lang = await get_lang(cb.from_user.id)
     async with Session() as s:
         p = (await s.execute(select(Product).where(Product.id == pid, Product.is_deleted.is_(False)))).scalar_one_or_none()
-        if not p:
-            return await cb.answer("Not found", show_alert=True)
+        if not p or p.is_out_of_stock:
+            return await cb.answer("⚠️ غير متوفر.", show_alert=True)
         vars_list = _product_vars(p)
         if idx_str.isdigit() and 0 <= int(idx_str) < len(vars_list):
             var = vars_list[int(idx_str)]
         else:
             var = idx_str[:100]
-        try:
-            s.add(CartItem(user_tg_id=cb.from_user.id, product_id=pid, variation=var))
+        existing = (
+            await s.execute(
+                select(CartItem).where(
+                    CartItem.user_tg_id == cb.from_user.id,
+                    CartItem.product_id == pid,
+                    CartItem.variation == var,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing:
+            if existing.quantity < p.stock_quantity:
+                existing.quantity += 1
+                await s.commit()
+                msg_done = f"✅ تمت زيادة الكمية في السلة ({existing.quantity}×)"
+            else:
+                msg_done = f"⚠️ أقصى كمية متوفرة في المخزون هي {p.stock_quantity}."
+        else:
+            s.add(CartItem(user_tg_id=cb.from_user.id, product_id=pid, variation=var, quantity=1))
             await s.commit()
-        except IntegrityError:
-            pass
+            msg_done = t(lang, "cart_added")
     with suppress(Exception):
-        await cb.message.edit_text(t(lang, "cart_added"))
+        await cb.message.edit_text(msg_done)
     await cb.answer()
 
 
-async def view_cart_for_user(target_msg: Message, uid: int):
-    lang = await get_lang(uid)
+async def _build_cart_view(uid: int, lang: str) -> tuple[str, InlineKeyboardMarkup]:
     async with Session() as s:
-        cart_items = (await s.execute(select(CartItem).where(CartItem.user_tg_id == uid))).scalars().all()
+        cart_items = (
+            await s.execute(select(CartItem).where(CartItem.user_tg_id == uid).order_by(CartItem.id.asc()))
+        ).scalars().all()
         if not cart_items:
-            return await target_msg.answer(t(lang, "cart_empty"), reply_markup=back_kb(lang, "nav:buyer"))
+            return t(lang, "cart_empty"), back_kb(lang, "nav:buyer")
         p_ids = [c.product_id for c in cart_items]
         products = (
             await s.execute(
@@ -2489,40 +3045,118 @@ async def view_cart_for_user(target_msg: Message, uid: int):
         ).scalars().all()
 
     if not products:
-        return await target_msg.answer(t(lang, "cart_empty"), reply_markup=back_kb(lang, "nav:buyer"))
+        return t(lang, "cart_empty"), back_kb(lang, "nav:buyer")
 
     by_id = {p.id: p for p in products}
     total = 0.0
     lines = []
+    item_rows = []
     has_available = False
     for c in cart_items:
         p = by_id.get(c.product_id)
         if not p:
             continue
+        qty = max(1, int(c.quantity or 1))
         price = _current_price(p)
+        subtotal = price * qty
         var_str = f" ({esc(c.variation)})" if c.variation else ""
+        short_title = (p.title[:16] + "…") if len(p.title) > 16 else p.title
         if p.is_out_of_stock:
             lines.append(f"⚠️ <s>{esc(p.title)}</s>{var_str} — نفدت الكمية")
+            item_rows.append([
+                InlineKeyboardButton(text=f"🗑️ حذف {short_title}", callback_data=f"cart_rm:{c.id}"),
+            ])
         else:
-            total += price
+            total += subtotal
             has_available = True
-            lines.append(f"📦 {esc(p.title)}{var_str} - {price:.2f} {esc(p.currency)}")
+            lines.append(
+                f"📦 <b>{esc(p.title)}</b>{var_str}\n"
+                f"    الكمية: <b>{qty}</b> × {price:g} = <b>{subtotal:g} {esc(p.currency)}</b>"
+            )
+            item_rows.append([
+                InlineKeyboardButton(text="➖", callback_data=f"cart_dec:{c.id}"),
+                InlineKeyboardButton(text=f"{short_title} (×{qty})", callback_data=f"prod:{p.id}"),
+                InlineKeyboardButton(text="➕", callback_data=f"cart_inc:{c.id}"),
+                InlineKeyboardButton(text="🗑️", callback_data=f"cart_rm:{c.id}"),
+            ])
 
     if not lines:
-        return await target_msg.answer(t(lang, "cart_empty"), reply_markup=back_kb(lang, "nav:buyer"))
+        return t(lang, "cart_empty"), back_kb(lang, "nav:buyer")
 
     text = t(lang, "my_cart") + "\n\n" + "\n".join(lines)
     if has_available:
-        text += f"\n\n💰 <b>الإجمالي: {total:.2f}</b>"
+        text += f"\n\n💰 <b>الإجمالي (قبل التوصيل): {total:.2f} {DEFAULT_CURRENCY}</b>"
     else:
         text += "\n\n⚠️ <b>جميع المنتجات في سلتك نفدت كميتها حالياً.</b>"
 
-    rows = []
+    rows = list(item_rows)
     if has_available:
         rows.append([InlineKeyboardButton(text=t(lang, "cart_checkout"), callback_data="cart_checkout")])
     rows.append([InlineKeyboardButton(text=t(lang, "cart_clear"), callback_data="cart_clear")])
     rows.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:buyer")])
-    await target_msg.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def view_cart_for_user(target_msg: Message, uid: int):
+    lang = await get_lang(uid)
+    text, kb = await _build_cart_view(uid, lang)
+    await target_msg.answer(text, reply_markup=kb)
+
+
+@buyer_router.callback_query(F.data.startswith("cart_inc:"))
+async def cart_inc_item(cb: CallbackQuery):
+    cid = int(cb.data.split(":")[1])
+    uid = cb.from_user.id
+    lang = await get_lang(uid)
+    async with Session() as s:
+        ci = (await s.execute(select(CartItem).where(CartItem.id == cid, CartItem.user_tg_id == uid))).scalar_one_or_none()
+        if not ci:
+            return await cb.answer()
+        p = await s.get(Product, ci.product_id)
+        if not p or p.is_out_of_stock:
+            return await cb.answer("⚠️ المنتج نفد من المخزون.", show_alert=True)
+        if (ci.quantity or 1) >= p.stock_quantity:
+            return await cb.answer(f"⚠️ أقصى كمية متوفرة هي {p.stock_quantity}.", show_alert=True)
+        ci.quantity = (ci.quantity or 1) + 1
+        await s.commit()
+    text, kb = await _build_cart_view(uid, lang)
+    with suppress(Exception):
+        await cb.message.edit_text(text, reply_markup=kb)
+    await cb.answer()
+
+
+@buyer_router.callback_query(F.data.startswith("cart_dec:"))
+async def cart_dec_item(cb: CallbackQuery):
+    cid = int(cb.data.split(":")[1])
+    uid = cb.from_user.id
+    lang = await get_lang(uid)
+    async with Session() as s:
+        ci = (await s.execute(select(CartItem).where(CartItem.id == cid, CartItem.user_tg_id == uid))).scalar_one_or_none()
+        if not ci:
+            return await cb.answer()
+        if (ci.quantity or 1) > 1:
+            ci.quantity = (ci.quantity or 1) - 1
+        else:
+            await s.delete(ci)
+        await s.commit()
+    text, kb = await _build_cart_view(uid, lang)
+    with suppress(Exception):
+        await cb.message.edit_text(text, reply_markup=kb)
+    await cb.answer()
+
+
+@buyer_router.callback_query(F.data.startswith("cart_rm:"))
+async def cart_rm_item(cb: CallbackQuery):
+    cid = int(cb.data.split(":")[1])
+    uid = cb.from_user.id
+    lang = await get_lang(uid)
+    async with Session() as s:
+        await s.execute(delete(CartItem).where(CartItem.id == cid, CartItem.user_tg_id == uid))
+        await s.commit()
+    text, kb = await _build_cart_view(uid, lang)
+    with suppress(Exception):
+        await cb.message.edit_text(text, reply_markup=kb)
+    await cb.answer("🗑️ تم حذف المنتج من السلة.")
 
 
 @buyer_router.message(F.text.in_([t(l, "btn_cart") for l in LANGS]))
@@ -2555,18 +3189,33 @@ async def start_checkout_flow(msg_obj, user_id: int, state: FSMContext):
         await s.commit()
         has_profile = bool(u.saved_name and u.saved_phone and u.saved_address)
     if has_profile:
-        await state.update_data(p_name=u.saved_name, p_phone=u.saved_phone, p_address=u.saved_address)
+        await state.update_data(
+            p_name=u.saved_name,
+            p_phone=u.saved_phone,
+            p_address=u.saved_address,
+            p_wilaya=u.saved_wilaya or "",
+        )
+        wilaya_line = f"\n🗺️ الولاية: {esc(wilaya_label(u.saved_wilaya))}" if u.saved_wilaya else ""
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=t(lang, "btn_use_saved"), callback_data="checkout_use_saved")],
             [InlineKeyboardButton(text="✏️ إدخال بيانات جديدة", callback_data="checkout_new_info")],
         ])
         await msg_obj.answer(
-            f"👤 الاسم: {esc(u.saved_name)}\n📞 الهاتف: {esc(u.saved_phone)}\n📍 العنوان: {esc(u.saved_address)}",
+            f"👤 الاسم: {esc(u.saved_name)}\n📞 الهاتف: {esc(u.saved_phone)}{wilaya_line}\n📍 العنوان: {esc(u.saved_address)}",
             reply_markup=kb,
         )
     else:
         await state.set_state(OrderFSM.name)
         await msg_obj.answer(t(lang, "order_name"), reply_markup=ReplyKeyboardRemove())
+
+
+async def _ask_checkout_delivery_type(msg_obj, lang: str, wilaya_code: str):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏠 توصيل لباب المنزل", callback_data="chk_dtype:home")],
+        [InlineKeyboardButton(text="🏢 مكتب التوصيل (Stop Desk)", callback_data="chk_dtype:desk")],
+    ])
+    w_txt = f"🗺️ الولاية المختارة: <b>{esc(wilaya_label(wilaya_code))}</b>\n\n" if wilaya_code else ""
+    await msg_obj.answer(f"{w_txt}🚚 اختر طريقة التوصيل المفضلة:", reply_markup=kb)
 
 
 @buyer_router.callback_query(F.data == "checkout_new_info")
@@ -2580,9 +3229,14 @@ async def checkout_new_info(cb: CallbackQuery, state: FSMContext):
 @buyer_router.callback_query(F.data == "checkout_use_saved")
 async def checkout_use_saved(cb: CallbackQuery, state: FSMContext):
     lang = await get_lang(cb.from_user.id)
-    await state.set_state(OrderFSM.note)
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t(lang, "btn_skip_note"), callback_data="skip_note")]])
-    await cb.message.answer(t(lang, "order_note"), reply_markup=kb)
+    data = await state.get_data()
+    if not data.get("p_wilaya"):
+        await state.set_state(OrderFSM.wilaya)
+        kb = build_wilaya_kb(1, "chk_wpg", "chk_w", "menu:home", lang)
+        await cb.message.answer("🗺️ اختر ولايتك (أو اكتب رقم الولاية من 1 إلى 58):", reply_markup=kb)
+    else:
+        await state.set_state(OrderFSM.delivery_type)
+        await _ask_checkout_delivery_type(cb.message, lang, data["p_wilaya"])
     await cb.answer()
 
 
@@ -2638,8 +3292,67 @@ async def order_phone(message: Message, state: FSMContext):
     if not message.text or not message.text.strip():
         return await message.answer(t(lang, "order_phone"))
     await state.update_data(p_phone=message.text.strip()[:MAX_PROFILE_PHONE_LEN])
-    await state.set_state(OrderFSM.address)
-    await message.answer(t(lang, "order_address"))
+    await state.set_state(OrderFSM.wilaya)
+    kb = build_wilaya_kb(1, "chk_wpg", "chk_w", "menu:home", lang)
+    await message.answer("🗺️ اختر ولايتك من القائمة (أو أرسل رقم الولاية من 1 إلى 58):", reply_markup=kb)
+
+
+@buyer_router.callback_query(F.data.startswith("chk_wpg:"))
+async def checkout_wilaya_pg(cb: CallbackQuery):
+    lang = await get_lang(cb.from_user.id)
+    page = int(cb.data.split(":")[1])
+    kb = build_wilaya_kb(page, "chk_wpg", "chk_w", "menu:home", lang)
+    with suppress(Exception):
+        await cb.message.edit_reply_markup(reply_markup=kb)
+    await cb.answer()
+
+
+@buyer_router.callback_query(F.data.startswith("chk_w:"))
+async def checkout_wilaya_select(cb: CallbackQuery, state: FSMContext):
+    lang = await get_lang(cb.from_user.id)
+    code = cb.data.split(":")[1].zfill(2)
+    if code not in ALGERIA_WILAYAS:
+        return await cb.answer("❌ ولاية غير صالحة.", show_alert=True)
+    await state.update_data(p_wilaya=code)
+    await state.set_state(OrderFSM.delivery_type)
+    await _ask_checkout_delivery_type(cb.message, lang, code)
+    await cb.answer()
+
+
+@buyer_router.message(OrderFSM.wilaya)
+async def checkout_wilaya_text(message: Message, state: FSMContext):
+    lang = await get_lang(message.from_user.id)
+    raw = (message.text or "").strip()
+    code = raw.zfill(2) if raw.isdigit() else ""
+    if code not in ALGERIA_WILAYAS:
+        for k, v in ALGERIA_WILAYAS.items():
+            if raw and raw in v:
+                code = k
+                break
+    if code not in ALGERIA_WILAYAS:
+        return await message.answer("❌ يرجى اختيار الولاية من الأزرار أو كتابة رقمها (1 إلى 58).")
+    await state.update_data(p_wilaya=code)
+    await state.set_state(OrderFSM.delivery_type)
+    await _ask_checkout_delivery_type(message, lang, code)
+
+
+@buyer_router.callback_query(F.data.startswith("chk_dtype:"))
+async def checkout_delivery_type_select(cb: CallbackQuery, state: FSMContext):
+    lang = await get_lang(cb.from_user.id)
+    dtype = cb.data.split(":")[1]
+    if dtype not in ("home", "desk"):
+        dtype = "home"
+    await state.update_data(p_delivery_type=dtype)
+    data = await state.get_data()
+    if data.get("p_address"):
+        await state.set_state(OrderFSM.note)
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t(lang, "btn_skip_note"), callback_data="skip_note")]])
+        await cb.message.answer(t(lang, "order_note"), reply_markup=kb)
+    else:
+        await state.set_state(OrderFSM.address)
+        prompt = "🏢 أرسل اسم البلدية / مكتب التوصيل القريب منك:" if dtype == "desk" else t(lang, "order_address")
+        await cb.message.answer(prompt)
+    await cb.answer()
 
 
 @buyer_router.message(OrderFSM.address)
@@ -2693,6 +3406,8 @@ async def process_checkout(message_obj, user_id: int, state: FSMContext, promo_c
     name = data.get("p_name", "")
     phone = data.get("p_phone", "")
     addr = data.get("p_address", "")
+    wilaya_code = data.get("p_wilaya", "")
+    delivery_type = data.get("p_delivery_type", "home")
     note = data.get("order_note", "")
     is_direct_order = bool(data.get("order_pid"))
 
@@ -2700,11 +3415,13 @@ async def process_checkout(message_obj, user_id: int, state: FSMContext, promo_c
         await state.clear()
         return await message_obj.answer(t(lang, "cancelled"), reply_markup=await get_main_kb(user_id, lang))
 
-    pairs = []
+    pairs: list[tuple[Product, str, int]] = []
     async with Session() as s:
         u = await ensure_user(s, user_id, lang)
         if not u.saved_name:
             u.saved_name, u.saved_phone, u.saved_address = name, phone, addr
+        if wilaya_code and not u.saved_wilaya:
+            u.saved_wilaya = wilaya_code
 
         if is_direct_order:
             p = (
@@ -2713,7 +3430,7 @@ async def process_checkout(message_obj, user_id: int, state: FSMContext, promo_c
                 )
             ).scalar_one_or_none()
             if p:
-                pairs.append((p, data.get("selected_var", "")))
+                pairs.append((p, data.get("selected_var", ""), 1))
         else:
             cart_items = (await s.execute(select(CartItem).where(CartItem.user_tg_id == user_id))).scalars().all()
             for ci in cart_items:
@@ -2723,7 +3440,7 @@ async def process_checkout(message_obj, user_id: int, state: FSMContext, promo_c
                     )
                 ).scalar_one_or_none()
                 if p:
-                    pairs.append((p, ci.variation))
+                    pairs.append((p, ci.variation, max(1, int(ci.quantity or 1))))
 
         if not pairs:
             if not is_direct_order:
@@ -2732,11 +3449,10 @@ async def process_checkout(message_obj, user_id: int, state: FSMContext, promo_c
             await state.clear()
             return await message_obj.answer(t(lang, "cart_empty"), reply_markup=await get_main_kb(user_id, lang))
 
-        by_store: dict[int, list[tuple[Product, str]]] = {}
-        for p, var in pairs:
-            by_store.setdefault(p.store_id, []).append((p, var))
+        by_store: dict[int, list[tuple[Product, str, int]]] = {}
+        for p, var, qty in pairs:
+            by_store.setdefault(p.store_id, []).append((p, var, qty))
 
-        # Validate promo code before creating orders so invalid codes don't silently charge full price
         store_discounts: dict[int, int] = {}
         if promo_code:
             for store_id in by_store:
@@ -2761,6 +3477,9 @@ async def process_checkout(message_obj, user_id: int, state: FSMContext, promo_c
         failed_titles: list[str] = []
         seller_notifications: list[tuple[int, str]] = []
         total_charged = 0.0
+        total_delivery = 0.0
+        dtype_label = "🏢 مكتب التوصيل (Stop Desk)" if delivery_type == "desk" else "🏠 باب المنزل"
+        w_label = wilaya_label(wilaya_code) if wilaya_code else "—"
 
         for store_id, list_ in by_store.items():
             store = (await s.execute(select(Store).where(Store.id == store_id))).scalar_one_or_none()
@@ -2768,17 +3487,19 @@ async def process_checkout(message_obj, user_id: int, state: FSMContext, promo_c
                 continue
             discount_percent = store_discounts.get(store_id, 0)
 
-            for p, var in list_:
+            for p, var, qty in list_:
                 base = _current_price(p)
-                final_price = max(0.0, base * (1 - discount_percent / 100.0))
+                unit_final = max(0.0, base * (1 - discount_percent / 100.0))
+                final_price = unit_final * qty
+                computed_delivery = await calculate_delivery_fee(s, store.id, p.delivery_fee, wilaya_code, delivery_type)
 
                 res = await s.execute(
                     update(Product)
-                    .where(Product.id == p.id, Product.stock_quantity > 0, Product.is_deleted.is_(False))
-                    .values(stock_quantity=Product.stock_quantity - 1)
+                    .where(Product.id == p.id, Product.stock_quantity >= qty, Product.is_deleted.is_(False))
+                    .values(stock_quantity=Product.stock_quantity - qty)
                 )
                 if res.rowcount == 0:
-                    failed_titles.append(p.title)
+                    failed_titles.append(f"{p.title} (الكمية المطلوبة: {qty})")
                     continue
 
                 await s.execute(
@@ -2795,32 +3516,38 @@ async def process_checkout(message_obj, user_id: int, state: FSMContext, promo_c
                     buyer_tg_id=user_id,
                     buyer_name=name,
                     buyer_phone=phone,
+                    buyer_wilaya=wilaya_code,
                     buyer_address=addr,
                     buyer_note=note,
                     variation=var,
+                    quantity=qty,
+                    delivery_type=delivery_type,
                     price=final_price,
-                    delivery_fee=p.delivery_fee,
+                    delivery_fee=computed_delivery,
                 )
                 s.add(order)
                 orders_created += 1
                 total_charged += final_price
+                total_delivery += computed_delivery
 
                 sl = await get_lang(store.owner_tg_id)
-                seller_text = t(
-                    sl,
-                    "new_order_notify",
-                    product=esc(p.title),
-                    variation=esc(var or "-"),
-                    name=esc(name),
-                    phone=esc(phone),
-                    address=esc(addr),
-                    note=esc(note or "-"),
-                    price=f"{final_price:.2f} {esc(p.currency)}",
-                    delivery=f"{p.delivery_fee:g} {esc(p.currency)}",
+                seller_text = (
+                    t(
+                        sl,
+                        "new_order_notify",
+                        product=esc(p.title),
+                        variation=esc(var or "-"),
+                        name=esc(name),
+                        phone=esc(phone),
+                        address=esc(addr),
+                        note=esc(note or "-"),
+                        price=f"{final_price:.2f} {esc(p.currency)}",
+                        delivery=f"{computed_delivery:g} {esc(p.currency)}",
+                    )
+                    + f"\n🔢 الكمية: <b>{qty}</b>\n🗺️ الولاية: <b>{esc(w_label)}</b>\n🚚 التوصيل: {dtype_label}"
                 )
                 seller_notifications.append((store.owner_tg_id, seller_text))
 
-        # Only clear cart when checking out FROM cart, not direct "Order now"
         if not is_direct_order:
             await s.execute(delete(CartItem).where(CartItem.user_tg_id == user_id))
         await s.commit()
@@ -2834,40 +3561,105 @@ async def process_checkout(message_obj, user_id: int, state: FSMContext, promo_c
     if orders_created == 0:
         failed_str = "\n• " + "\n• ".join(esc(x) for x in failed_titles[:5]) if failed_titles else ""
         await message_obj.answer(
-            f"⚠️ <b>لم يتم إنشاء أي طلب</b>\n\nالمنتجات التالية نفدت كميتها قبل إتمام الطلب:{failed_str}",
+            f"⚠️ <b>لم يتم إنشاء أي طلب</b>\n\nالمنتجات التالية نفدت كميتها أو لا تكفي الكمية المطلوبة:{failed_str}",
             reply_markup=await get_main_kb(user_id, lang),
         )
     elif failed_titles:
         await message_obj.answer(
-            "⚠️ <b>تنبيه:</b> بعض المنتجات نفدت كميتها ولم تُضف للطلب:\n"
+            "⚠️ <b>تنبيه:</b> بعض المنتجات لم تتوفر بالكمية المطلوبة:\n"
             + "\n".join(f"• {esc(x)}" for x in failed_titles)
-            + f"\n\n✅ تم إنشاء <b>{orders_created}</b> طلب بنجاح.",
+            + f"\n\n✅ تم إنشاء <b>{orders_created}</b> طلب بنجاح.\n"
+            + f"💰 المنتجات: {total_charged:.2f} | 🚚 التوصيل: {total_delivery:g} {DEFAULT_CURRENCY}",
             reply_markup=await get_main_kb(user_id, lang),
         )
     else:
         promo_note = f"\n{t(lang, 'promo_applied', price=f'{total_charged:.2f}')}" if store_discounts else ""
-        await message_obj.answer(t(lang, "order_success") + promo_note, reply_markup=await get_main_kb(user_id, lang))
+        summary = (
+            f"\n\n🗺️ الولاية: <b>{esc(w_label)}</b> ({dtype_label})"
+            f"\n💰 إجمالي المنتجات: <b>{total_charged:.2f} {DEFAULT_CURRENCY}</b>"
+            f"\n🚚 إجمالي التوصيل: <b>{total_delivery:g} {DEFAULT_CURRENCY}</b>"
+            f"\n🧾 الإجمالي الكلي: <b>{total_charged + total_delivery:.2f} {DEFAULT_CURRENCY}</b>"
+        )
+        await message_obj.answer(t(lang, "order_success") + promo_note + summary, reply_markup=await get_main_kb(user_id, lang))
 
 
 # ════════════════════════════════════════════════════════════════════
 # 6. BUYER FEATURES — BROWSE, CATEGORIES, SEARCH, PRODUCT VIEW, SOCIAL
 # ════════════════════════════════════════════════════════════════════
 
-async def browse_all_for_user(target_msg: Message, uid: int):
-    lang = await get_lang(uid)
+def _browse_filter_rows(base_prefix: str, active_flt: str) -> list[list[InlineKeyboardButton]]:
+    def _lbl(key: str, text: str) -> str:
+        return f"• {text} •" if active_flt == key else text
+    return [
+        [
+            InlineKeyboardButton(text=_lbl("new", "🆕 الأحدث"), callback_data=f"{base_prefix}:new:1"),
+            InlineKeyboardButton(text=_lbl("cheap", "💰 الأرخص"), callback_data=f"{base_prefix}:cheap:1"),
+        ],
+        [
+            InlineKeyboardButton(text=_lbl("flash", "🔥 عروض فلاش"), callback_data=f"{base_prefix}:flash:1"),
+            InlineKeyboardButton(text=_lbl("verified", "✓ موثق/VIP"), callback_data=f"{base_prefix}:verified:1"),
+        ],
+    ]
+
+
+async def _fetch_filtered_products(flt: str, page: int, category_id: Optional[int] = None):
+    now = utcnow()
+    if flt not in ("new", "cheap", "flash", "verified"):
+        flt = "new"
     async with Session() as s:
-        products = (
-            await s.execute(
-                select(Product)
-                .where(Product.status == "approved", Product.is_deleted.is_(False))
-                .order_by(nullslast(Product.featured_until.desc()), Product.created_at.desc())
+        base_conds = [Product.status == "approved", Product.is_deleted.is_(False)]
+        if category_id is not None:
+            base_conds.append(Product.category_id == category_id)
+        if flt == "flash":
+            base_conds.append(Product.flash_sale_price.isnot(None))
+            base_conds.append(Product.flash_sale_ends_at.isnot(None))
+            base_conds.append(Product.flash_sale_ends_at > now)
+
+        count_q = select(func.count(Product.id)).where(*base_conds)
+        list_q = select(Product).where(*base_conds)
+
+        if flt == "verified":
+            verified_cond = or_(Store.verified.is_(True), and_(Store.vip_until.isnot(None), Store.vip_until > now))
+            count_q = count_q.join(Store, Store.id == Product.store_id).where(verified_cond)
+            list_q = list_q.join(Store, Store.id == Product.store_id).where(verified_cond)
+
+        if flt == "cheap":
+            eff_price = case(
+                (
+                    and_(
+                        Product.flash_sale_price.isnot(None),
+                        Product.flash_sale_ends_at.isnot(None),
+                        Product.flash_sale_ends_at > now,
+                    ),
+                    Product.flash_sale_price,
+                ),
+                else_=Product.price,
             )
+            list_q = list_q.order_by(eff_price.asc(), Product.created_at.desc())
+        else:
+            list_q = list_q.order_by(nullslast(Product.featured_until.desc()), Product.created_at.desc())
+
+        total = (await s.execute(count_q)).scalar() or 0
+        total_pages = max(1, math.ceil(total / ITEMS_PER_PAGE))
+        page = max(1, min(page, total_pages))
+        products = (
+            await s.execute(list_q.limit(ITEMS_PER_PAGE).offset((page - 1) * ITEMS_PER_PAGE))
         ).scalars().all()
-    if not products:
+    return total, page, products
+
+
+async def browse_all_for_user(target_msg: Message, uid: int, flt: str = "new"):
+    lang = await get_lang(uid)
+    total, page, products = await _fetch_filtered_products(flt, 1)
+    if total == 0 and flt == "new":
         return await target_msg.answer(t(lang, "no_products"), reply_markup=back_kb(lang, "nav:buyer"))
     items = [(_product_line(p), f"prod:{p.id}") for p in products]
-    kb = build_pagination_kb(items, 1, "browse_pg", lang, [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:buyer")])
-    await target_msg.answer(t(lang, "all_products"), reply_markup=kb)
+    kb = build_sql_pagination_kb(
+        items, page, total, f"browse_pg:{flt}", lang,
+        top_rows=_browse_filter_rows("browse_pg", flt),
+        extra_buttons=[InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:buyer")],
+    )
+    await target_msg.answer(f"{t(lang, 'all_products')} ({total})", reply_markup=kb)
 
 
 @buyer_router.message(F.text.in_([t(l, "btn_browse") for l in LANGS]))
@@ -2878,19 +3670,24 @@ async def browse_all(message: Message):
 @buyer_router.callback_query(F.data.startswith("browse_pg:"))
 async def browse_pg(cb: CallbackQuery):
     lang = await get_lang(cb.from_user.id)
-    page = int(cb.data.split(":")[1])
-    async with Session() as s:
-        products = (
-            await s.execute(
-                select(Product)
-                .where(Product.status == "approved", Product.is_deleted.is_(False))
-                .order_by(nullslast(Product.featured_until.desc()), Product.created_at.desc())
-            )
-        ).scalars().all()
+    parts = cb.data.split(":")
+    if len(parts) == 3:
+        flt, page = parts[1], int(parts[2])
+    else:
+        flt, page = "new", int(parts[1])
+    total, page, products = await _fetch_filtered_products(flt, page)
     items = [(_product_line(p), f"prod:{p.id}") for p in products]
-    kb = build_pagination_kb(items, page, "browse_pg", lang, [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:buyer")])
-    with suppress(Exception):
-        await cb.message.edit_reply_markup(reply_markup=kb)
+    kb = build_sql_pagination_kb(
+        items, page, total, f"browse_pg:{flt}", lang,
+        top_rows=_browse_filter_rows("browse_pg", flt),
+        extra_buttons=[InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:buyer")],
+    )
+    header = f"{t(lang, 'all_products')} ({total})" if total else f"{t(lang, 'all_products')}\n\nℹ️ لا توجد منتجات تطابق هذا الفلتر حالياً."
+    try:
+        await cb.message.edit_text(header, reply_markup=kb)
+    except Exception:
+        with suppress(Exception):
+            await cb.message.edit_reply_markup(reply_markup=kb)
     await cb.answer()
 
 
@@ -2900,7 +3697,7 @@ async def browse_categories_for_user(target_msg: Message, uid: int):
         cats = (await s.execute(select(Category).order_by(Category.id.asc()))).scalars().all()
     if not cats:
         return await target_msg.answer(t(lang, "no_products"), reply_markup=back_kb(lang, "nav:buyer"))
-    kb = [[InlineKeyboardButton(text=f"📂 {_cat_name(c, lang)}", callback_data=f"cat_browse:{c.id}:1")] for c in cats]
+    kb = [[InlineKeyboardButton(text=f"📂 {_cat_name(c, lang)}", callback_data=f"cat_browse:{c.id}:new:1")] for c in cats]
     kb.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:buyer")])
     await target_msg.answer(t(lang, "cats_browse_title"), reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
@@ -2908,22 +3705,25 @@ async def browse_categories_for_user(target_msg: Message, uid: int):
 @buyer_router.callback_query(F.data.startswith("cat_browse:"))
 async def cat_browse(cb: CallbackQuery):
     lang = await get_lang(cb.from_user.id)
-    _, cid_str, page_str = cb.data.split(":")
-    cid, page = int(cid_str), int(page_str)
+    parts = cb.data.split(":")
+    if len(parts) == 4:
+        cid, flt, page = int(parts[1]), parts[2], int(parts[3])
+    else:
+        cid, flt, page = int(parts[1]), "new", int(parts[2])
     async with Session() as s:
         cat = (await s.execute(select(Category).where(Category.id == cid))).scalar_one_or_none()
-        products = (
-            await s.execute(
-                select(Product)
-                .where(Product.category_id == cid, Product.status == "approved", Product.is_deleted.is_(False))
-                .order_by(nullslast(Product.featured_until.desc()), Product.created_at.desc())
-            )
-        ).scalars().all()
-    if not products:
+    total, page, products = await _fetch_filtered_products(flt, page, category_id=cid)
+    if total == 0 and flt == "new":
         return await cb.answer(t(lang, "no_products"), show_alert=True)
     items = [(_product_line(p), f"prod:{p.id}") for p in products]
-    kb = build_pagination_kb(items, page, f"cat_browse:{cid}", lang, [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:cats")])
-    title = f"📂 <b>{esc(_cat_name(cat, lang))}</b>"
+    kb = build_sql_pagination_kb(
+        items, page, total, f"cat_browse:{cid}:{flt}", lang,
+        top_rows=_browse_filter_rows(f"cat_browse:{cid}", flt),
+        extra_buttons=[InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:cats")],
+    )
+    title = f"📂 <b>{esc(_cat_name(cat, lang))}</b> ({total})"
+    if total == 0:
+        title += "\n\nℹ️ لا توجد منتجات تطابق هذا الفلتر."
     try:
         await cb.message.edit_text(title, reply_markup=kb)
     except Exception:
@@ -3012,18 +3812,36 @@ async def search_store_exec(message: Message, state: FSMContext):
     await message.answer(t(lang, "main_menu"), reply_markup=await get_main_kb(message.from_user.id, lang))
 
 
-async def top_stores_for_user(target_msg: Message, uid: int):
-    lang = await get_lang(uid)
+async def _fetch_top_stores_page(page: int, lang: str):
+    now = utcnow()
+    vip_rank = case((and_(Store.vip_until.isnot(None), Store.vip_until > now), 1), else_=0)
     async with Session() as s:
+        total = (await s.execute(select(func.count(Store.id)))).scalar() or 0
+        total_pages = max(1, math.ceil(total / ITEMS_PER_PAGE))
+        page = max(1, min(page, total_pages))
         stores = (
             await s.execute(
-                select(Store).outerjoin(StoreFollower).group_by(Store.id).order_by(func.count(StoreFollower.id).desc()).limit(50)
+                select(Store)
+                .outerjoin(StoreFollower)
+                .group_by(Store.id)
+                .order_by(vip_rank.desc(), func.count(StoreFollower.id).desc(), Store.id.asc())
+                .limit(ITEMS_PER_PAGE)
+                .offset((page - 1) * ITEMS_PER_PAGE)
             )
         ).scalars().all()
-    if not stores:
+    items = [(f"🏪 {st.name} {store_badges(st, lang)}".strip(), f"pubstore:{st.id}:1") for st in stores]
+    kb = build_sql_pagination_kb(
+        items, page, total, "top_store_pg", lang,
+        extra_buttons=[InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:buyer")],
+    )
+    return total, kb
+
+
+async def top_stores_for_user(target_msg: Message, uid: int):
+    lang = await get_lang(uid)
+    total, kb = await _fetch_top_stores_page(1, lang)
+    if total == 0:
         return await target_msg.answer(t(lang, "top_stores_empty"), reply_markup=back_kb(lang, "nav:buyer"))
-    items = [(f"🏪 {st.name} {t(lang, 'verified_badge') if st.verified else ''}".strip(), f"pubstore:{st.id}:1") for st in stores]
-    kb = build_pagination_kb(items, 1, "top_store_pg", lang, [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:buyer")])
     await target_msg.answer(t(lang, "top_stores_title"), reply_markup=kb)
 
 
@@ -3036,14 +3854,7 @@ async def top_stores(message: Message):
 async def top_stores_pg(cb: CallbackQuery):
     lang = await get_lang(cb.from_user.id)
     page = int(cb.data.split(":")[1])
-    async with Session() as s:
-        stores = (
-            await s.execute(
-                select(Store).outerjoin(StoreFollower).group_by(Store.id).order_by(func.count(StoreFollower.id).desc()).limit(50)
-            )
-        ).scalars().all()
-    items = [(f"🏪 {st.name} {t(lang, 'verified_badge') if st.verified else ''}".strip(), f"pubstore:{st.id}:1") for st in stores]
-    kb = build_pagination_kb(items, page, "top_store_pg", lang, [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:buyer")])
+    _total, kb = await _fetch_top_stores_page(page, lang)
     with suppress(Exception):
         await cb.message.edit_reply_markup(reply_markup=kb)
     await cb.answer()
@@ -3089,20 +3900,17 @@ async def similar_prods(cb: CallbackQuery):
 
 # ─── Product View & Contact ───
 
-@buyer_router.callback_query(F.data.startswith("prod:"))
-async def prod_view(cb: CallbackQuery):
-    lang = await get_lang(cb.from_user.id)
-    pid = int(cb.data.split(":")[1])
+async def send_product_card(target_msg: Message, pid: int, viewer_id: int, lang: str) -> bool:
     async with Session() as s:
         p = (await s.execute(select(Product).where(Product.id == pid, Product.is_deleted.is_(False)))).scalar_one_or_none()
         if not p:
-            return await cb.answer("Not found", show_alert=True)
+            return False
         p.views += 1
         await s.commit()
         store = (await s.execute(select(Store).where(Store.id == p.store_id))).scalar_one_or_none()
         rating = await get_store_rating(store.id, s) if store else "—"
         is_fav = (
-            await s.execute(select(Favorite).where(Favorite.user_tg_id == cb.from_user.id, Favorite.product_id == pid))
+            await s.execute(select(Favorite).where(Favorite.user_tg_id == viewer_id, Favorite.product_id == pid))
         ).scalar_one_or_none()
         latest_rev = (
             await s.execute(
@@ -3122,7 +3930,7 @@ async def prod_view(cb: CallbackQuery):
         total_hours = int(tl.total_seconds() // 3600)
         minutes = int((tl.total_seconds() % 3600) // 60)
         flash_text = t(lang, "flash_sale_warn", old_price=f"{p.price:g} {esc(p.currency)}", time=f"{total_hours}س {minutes}د")
-    badge = t(lang, "verified_badge") if store and store.verified else ""
+    badge = store_badges(store, lang)
     store_name = f"{esc(store.name)} {badge}".strip() if store else "-"
     caption = t(
         lang,
@@ -3163,17 +3971,27 @@ async def prod_view(cb: CallbackQuery):
     photos = [ph for ph in (p.photo_file_id, p.photo_file_id_2, p.photo_file_id_3) if ph]
     try:
         if len(photos) == 1:
-            await cb.message.answer_photo(photo=photos[0], caption=caption[:1024], reply_markup=kb)
+            await target_msg.answer_photo(photo=photos[0], caption=caption[:1024], reply_markup=kb)
         elif len(photos) > 1:
             media = [InputMediaPhoto(media=ph, caption=caption[:1024] if i == 0 else None) for i, ph in enumerate(photos)]
-            await cb.message.answer_media_group(media=media)
-            await cb.message.answer("اختر الإجراء:", reply_markup=kb)
+            await target_msg.answer_media_group(media=media)
+            await target_msg.answer("اختر الإجراء:", reply_markup=kb)
         else:
-            await cb.message.answer(caption, reply_markup=kb)
+            await target_msg.answer(caption, reply_markup=kb)
     except Exception as e:
         logger.error(f"Failed to send product photos: {e}")
         with suppress(Exception):
-            await cb.message.answer(caption, reply_markup=kb)
+            await target_msg.answer(caption, reply_markup=kb)
+    return True
+
+
+@buyer_router.callback_query(F.data.startswith("prod:"))
+async def prod_view(cb: CallbackQuery):
+    lang = await get_lang(cb.from_user.id)
+    pid = int(cb.data.split(":")[1])
+    ok = await send_product_card(cb.message, pid, cb.from_user.id, lang)
+    if not ok:
+        return await cb.answer("Not found", show_alert=True)
     await cb.answer()
 
 
@@ -3418,12 +4236,13 @@ async def seller_section_menu(message: Message, state: FSMContext):
         return
     kb = []
     for st in stores:
-        badge = t(lang, "verified_badge") if st.verified else ""
+        badge = store_badges(st, lang)
         kb.append([InlineKeyboardButton(text=f"🏪 {st.name} {badge}".strip(), callback_data=f"mngstore:{st.id}")])
-    if len(stores) < MAX_STORES_PER_USER:
+    max_stores = await user_max_stores(message.from_user.id)
+    if len(stores) < max_stores:
         kb.append([InlineKeyboardButton(text=t(lang, "add_new_store"), callback_data="nav:become_seller")])
     else:
-        kb.append([InlineKeyboardButton(text=t(lang, "max_stores_reached"), callback_data="ignore")])
+        kb.append([InlineKeyboardButton(text=f"🔒 الحد الأقصى ({max_stores} متاجر)", callback_data="ignore")])
     kb.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="menu:home")])
     await message.answer(t(lang, "seller_menu_title") + t(lang, "choose_store"), reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
@@ -3460,9 +4279,10 @@ async def create_store_name(message: Message, state: FSMContext):
     if not message.text or not message.text.strip():
         return await message.answer(t(lang, "store_create_prompt"))
     stores = await get_stores_by_owner(message.from_user.id)
-    if len(stores) >= MAX_STORES_PER_USER:
+    max_stores = await user_max_stores(message.from_user.id)
+    if len(stores) >= max_stores:
         await state.clear()
-        return await message.answer("❌ وصلت للحد الأقصى (3 متاجر).", reply_markup=await get_main_kb(message.from_user.id, lang))
+        return await message.answer(f"❌ وصلت للحد الأقصى ({max_stores} متاجر).", reply_markup=await get_main_kb(message.from_user.id, lang))
     async with Session() as s:
         s.add(Store(owner_tg_id=message.from_user.id, name=message.text.strip()[:MAX_STORE_NAME_LEN], contact=message.from_user.username or ""))
         u = await ensure_user(s, message.from_user.id, lang)
@@ -3472,7 +4292,7 @@ async def create_store_name(message: Message, state: FSMContext):
     await message.answer(t(lang, "store_created"), reply_markup=await get_main_kb(message.from_user.id, lang))
 
 
-# ─── Store Settings ───
+# ─── Store Settings & 58-Wilaya Delivery Rates ───
 
 @seller_router.callback_query(F.data.startswith("st_settings:"))
 async def store_settings(cb: CallbackQuery):
@@ -3485,10 +4305,209 @@ async def store_settings(cb: CallbackQuery):
         [InlineKeyboardButton(text=t(lang, "btn_edit_bio"), callback_data=f"st_setbio:{store_id}")],
         [InlineKeyboardButton(text=t(lang, "btn_edit_logo"), callback_data=f"st_setlogo:{store_id}")],
         [InlineKeyboardButton(text=t(lang, "btn_edit_contacts"), callback_data=f"st_setcontacts:{store_id}")],
+        [InlineKeyboardButton(text="🚚 أسعار التوصيل (58 ولاية)", callback_data=f"st_delivery:{store_id}")],
         [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=f"mngstore:{store_id}")],
     ])
-    with suppress(Exception):
+    try:
         await cb.message.edit_text(t(lang, "settings_menu"), reply_markup=kb)
+    except Exception:
+        await cb.message.answer(t(lang, "settings_menu"), reply_markup=kb)
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("st_delivery:"))
+async def store_delivery_menu(cb: CallbackQuery):
+    sid = int(cb.data.split(":")[1])
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    lang = await get_lang(cb.from_user.id)
+    async with Session() as s:
+        st = await s.get(Store, sid)
+        custom_count = (
+            await s.execute(select(func.count(StoreDeliveryRate.id)).where(StoreDeliveryRate.store_id == sid))
+        ).scalar() or 0
+    if not st:
+        return await cb.answer("Not found", show_alert=True)
+    text = (
+        f"🚚 <b>إعدادات التوصيل — {esc(st.name)}</b>\n\n"
+        f"🏠 السعر الافتراضي لباب المنزل: <b>{st.delivery_fee:g} {DEFAULT_CURRENCY}</b>\n"
+        f"🏢 السعر الافتراضي لمكتب التوصيل (Stop Desk): <b>{st.default_desk_fee:g} {DEFAULT_CURRENCY}</b>\n"
+        f"🗺️ الولايات المخصصة: <b>{custom_count} / 58</b>\n\n"
+        f"💡 عند الطلب، يُحسب السعر تلقائياً حسب ولاية المشتري وطريقة التوصيل (وإن لم تُخصص الولاية يُستخدم السعر الافتراضي)."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏠 تعديل السعر الافتراضي (للمنزل)", callback_data=f"st_deliv_home:{sid}")],
+        [InlineKeyboardButton(text="🏢 تعديل السعر الافتراضي (للمكتب)", callback_data=f"st_deliv_desk:{sid}")],
+        [InlineKeyboardButton(text="🗺️ تخصيص سعر لولاية محددة (58 ولاية)", callback_data=f"st_deliv_wpg:{sid}:1")],
+        [InlineKeyboardButton(text=f"📋 عرض الولايات المخصصة ({custom_count})", callback_data=f"st_deliv_list:{sid}")],
+        [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=f"st_settings:{sid}")],
+    ])
+    try:
+        await cb.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb)
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("st_deliv_home:"))
+async def store_deliv_home_start(cb: CallbackQuery, state: FSMContext):
+    sid = int(cb.data.split(":")[1])
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    await state.update_data(deliv_sid=sid)
+    await state.set_state(DeliveryRateFSM.default_home)
+    await cb.message.answer(f"🏠 أرسل السعر الافتراضي للتوصيل لباب المنزل ({DEFAULT_CURRENCY}) — مثال: 600 (أو 0 للمجاني):")
+    await cb.answer()
+
+
+@seller_router.message(DeliveryRateFSM.default_home)
+async def store_deliv_home_save(message: Message, state: FSMContext):
+    lang = await get_lang(message.from_user.id)
+    fee = _parse_positive_float(message.text or "", allow_zero=True)
+    if fee is None:
+        return await message.answer("❌ يرجى إدخال رقم صحيح (مثال: 600 أو 0).")
+    data = await state.get_data()
+    sid = data.get("deliv_sid")
+    await state.clear()
+    if sid and await is_store_owner(message.from_user.id, sid):
+        async with Session() as s:
+            st = await s.get(Store, sid)
+            if st:
+                st.delivery_fee = fee
+                await s.commit()
+    await message.answer(
+        f"✅ تم تحديث سعر التوصيل الافتراضي للمنزل إلى <b>{fee:g} {DEFAULT_CURRENCY}</b>.",
+        reply_markup=back_kb(lang, f"st_delivery:{sid}"),
+    )
+
+
+@seller_router.callback_query(F.data.startswith("st_deliv_desk:"))
+async def store_deliv_desk_start(cb: CallbackQuery, state: FSMContext):
+    sid = int(cb.data.split(":")[1])
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    await state.update_data(deliv_sid=sid)
+    await state.set_state(DeliveryRateFSM.default_desk)
+    await cb.message.answer(f"🏢 أرسل السعر الافتراضي للتوصيل لمكتب التوصيل Stop Desk ({DEFAULT_CURRENCY}) — مثال: 400:")
+    await cb.answer()
+
+
+@seller_router.message(DeliveryRateFSM.default_desk)
+async def store_deliv_desk_save(message: Message, state: FSMContext):
+    lang = await get_lang(message.from_user.id)
+    fee = _parse_positive_float(message.text or "", allow_zero=True)
+    if fee is None:
+        return await message.answer("❌ يرجى إدخال رقم صحيح (مثال: 400 أو 0).")
+    data = await state.get_data()
+    sid = data.get("deliv_sid")
+    await state.clear()
+    if sid and await is_store_owner(message.from_user.id, sid):
+        async with Session() as s:
+            st = await s.get(Store, sid)
+            if st:
+                st.default_desk_fee = fee
+                await s.commit()
+    await message.answer(
+        f"✅ تم تحديث سعر التوصيل الافتراضي للمكتب إلى <b>{fee:g} {DEFAULT_CURRENCY}</b>.",
+        reply_markup=back_kb(lang, f"st_delivery:{sid}"),
+    )
+
+
+@seller_router.callback_query(F.data.startswith("st_deliv_wpg:"))
+async def store_deliv_wilaya_pg(cb: CallbackQuery):
+    _, sid_str, pg_str = cb.data.split(":")
+    sid, page = int(sid_str), int(pg_str)
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    lang = await get_lang(cb.from_user.id)
+    kb = build_wilaya_kb(page, f"st_deliv_wpg:{sid}", f"st_deliv_w:{sid}", f"st_delivery:{sid}", lang)
+    try:
+        await cb.message.edit_text("🗺️ اختر الولاية لتحديد سعر التوصيل لها:", reply_markup=kb)
+    except Exception:
+        await cb.message.answer("🗺️ اختر الولاية لتحديد سعر التوصيل لها:", reply_markup=kb)
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("st_deliv_w:"))
+async def store_deliv_wilaya_pick(cb: CallbackQuery, state: FSMContext):
+    _, sid_str, code = cb.data.split(":")
+    sid = int(sid_str)
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    await state.update_data(deliv_sid=sid, deliv_wilaya=code)
+    await state.set_state(DeliveryRateFSM.wilaya_rate)
+    await cb.message.answer(
+        f"🗺️ <b>تخصيص التوصيل لولاية {esc(wilaya_label(code))}</b>\n\n"
+        f"أرسل سعر التوصيل للمنزل ثم للمكتب مفصولين بمسافة:\n"
+        f"مثال: <code>700 450</code>\n"
+        f"(أو أرسل رقماً واحداً فقط لتطبيقه على المنزل والمكتب معاً)"
+    )
+    await cb.answer()
+
+
+@seller_router.message(DeliveryRateFSM.wilaya_rate)
+async def store_deliv_wilaya_save(message: Message, state: FSMContext):
+    lang = await get_lang(message.from_user.id)
+    parts = (message.text or "").strip().split()
+    if len(parts) == 1:
+        home_fee = _parse_positive_float(parts[0], allow_zero=True)
+        desk_fee = home_fee
+    elif len(parts) >= 2:
+        home_fee = _parse_positive_float(parts[0], allow_zero=True)
+        desk_fee = _parse_positive_float(parts[1], allow_zero=True)
+    else:
+        home_fee = desk_fee = None
+    if home_fee is None or desk_fee is None:
+        return await message.answer("❌ صيغة غير صحيحة. مثال: <code>700 450</code>")
+    data = await state.get_data()
+    sid, code = data.get("deliv_sid"), data.get("deliv_wilaya")
+    await state.clear()
+    if sid and code and await is_store_owner(message.from_user.id, sid):
+        async with Session() as s:
+            rate = (
+                await s.execute(
+                    select(StoreDeliveryRate).where(
+                        StoreDeliveryRate.store_id == sid,
+                        StoreDeliveryRate.wilaya_code == code,
+                    )
+                )
+            ).scalar_one_or_none()
+            if rate:
+                rate.home_fee = home_fee
+                rate.desk_fee = desk_fee
+            else:
+                s.add(StoreDeliveryRate(store_id=sid, wilaya_code=code, home_fee=home_fee, desk_fee=desk_fee))
+            await s.commit()
+    await message.answer(
+        f"✅ تم حفظ أسعار التوصيل لولاية <b>{esc(wilaya_label(code))}</b>:\n"
+        f"🏠 المنزل: <b>{home_fee:g} {DEFAULT_CURRENCY}</b>\n"
+        f"🏢 المكتب: <b>{desk_fee:g} {DEFAULT_CURRENCY}</b>",
+        reply_markup=back_kb(lang, f"st_delivery:{sid}"),
+    )
+
+
+@seller_router.callback_query(F.data.startswith("st_deliv_list:"))
+async def store_deliv_list(cb: CallbackQuery):
+    sid = int(cb.data.split(":")[1])
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    lang = await get_lang(cb.from_user.id)
+    async with Session() as s:
+        rates = (
+            await s.execute(
+                select(StoreDeliveryRate)
+                .where(StoreDeliveryRate.store_id == sid)
+                .order_by(StoreDeliveryRate.wilaya_code.asc())
+            )
+        ).scalars().all()
+    if not rates:
+        return await cb.answer("لا توجد ولايات مخصصة بعد، يُستخدم السعر الافتراضي للجميع.", show_alert=True)
+    lines = [
+        f"• <b>{esc(wilaya_label(r.wilaya_code))}</b>: 🏠 {r.home_fee:g} | 🏢 {r.desk_fee:g} {DEFAULT_CURRENCY}"
+        for r in rates
+    ]
+    text = "📋 <b>أسعار التوصيل المخصصة:</b>\n\n" + "\n".join(lines)
+    await cb.message.answer(text[:4000], reply_markup=back_kb(lang, f"st_delivery:{sid}"))
     await cb.answer()
 
 
@@ -3804,14 +4823,23 @@ async def store_list(cb: CallbackQuery):
         return await cb.answer("⛔ غير مصرح.", show_alert=True)
     lang = await get_lang(cb.from_user.id)
     async with Session() as s:
+        total = (
+            await s.execute(
+                select(func.count(Product.id)).where(Product.store_id == sid, Product.is_deleted.is_(False))
+            )
+        ).scalar() or 0
+        total_pages = max(1, math.ceil(total / ITEMS_PER_PAGE))
+        page = max(1, min(page, total_pages))
         products = (
             await s.execute(
                 select(Product)
                 .where(Product.store_id == sid, Product.is_deleted.is_(False))
                 .order_by(Product.created_at.desc())
+                .limit(ITEMS_PER_PAGE)
+                .offset((page - 1) * ITEMS_PER_PAGE)
             )
         ).scalars().all()
-    if not products:
+    if total == 0:
         with suppress(Exception):
             await cb.message.edit_text(
                 t(lang, "my_products_empty"),
@@ -3824,9 +4852,12 @@ async def store_list(cb: CallbackQuery):
     for p in products:
         flash = "🔥 " if (p.flash_sale_price and p.flash_sale_ends_at and p.flash_sale_ends_at > now) else ""
         items.append((f"{icons.get(p.status, '?')} {flash}{p.title} — {p.price:g} {p.currency}", f"mng:{p.id}"))
-    kb = build_pagination_kb(items, page, f"st_list:{sid}", lang, [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=f"mngstore:{sid}")])
+    kb = build_sql_pagination_kb(
+        items, page, total, f"st_list:{sid}", lang,
+        extra_buttons=[InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=f"mngstore:{sid}")],
+    )
     with suppress(Exception):
-        await cb.message.edit_text(t(lang, "my_products_list"), reply_markup=kb)
+        await cb.message.edit_text(f"{t(lang, 'my_products_list')} ({total})", reply_markup=kb)
     await cb.answer()
 
 
@@ -3866,9 +4897,18 @@ async def manage_product(cb: CallbackQuery):
         )
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📤 إعادة إرسال للمراجعة", callback_data=f"mngresubmit:{pid}")],
-            [InlineKeyboardButton(text=t(lang, "btn_edit_price"), callback_data=f"mngprice:{pid}")],
-            [InlineKeyboardButton(text=t(lang, "btn_edit_desc"), callback_data=f"mngdesc:{pid}")],
-            [InlineKeyboardButton(text=t(lang, "btn_edit_stock"), callback_data=f"mngstock_edit:{pid}")],
+            [
+                InlineKeyboardButton(text="✏️ تعديل العنوان", callback_data=f"mngtitle:{pid}"),
+                InlineKeyboardButton(text=t(lang, "btn_edit_price"), callback_data=f"mngprice:{pid}"),
+            ],
+            [
+                InlineKeyboardButton(text=t(lang, "btn_edit_desc"), callback_data=f"mngdesc:{pid}"),
+                InlineKeyboardButton(text=t(lang, "btn_edit_stock"), callback_data=f"mngstock_edit:{pid}"),
+            ],
+            [
+                InlineKeyboardButton(text="📂 تعديل التصنيف", callback_data=f"mngcat:{pid}"),
+                InlineKeyboardButton(text="🖼️ تعديل الصور", callback_data=f"mngphotos:{pid}"),
+            ],
             [InlineKeyboardButton(text=t(lang, "btn_delete_prod"), callback_data=f"mngdel:{pid}")],
             [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=f"mngstore:{p.store_id}")],
         ])
@@ -3878,16 +4918,177 @@ async def manage_product(cb: CallbackQuery):
 
     stock_text = "❌ نفدت" if p.is_out_of_stock else f"✅ متوفر ({p.stock_quantity})"
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t(lang, "btn_edit_price"), callback_data=f"mngprice:{pid}")],
-        [InlineKeyboardButton(text=t(lang, "btn_edit_desc"), callback_data=f"mngdesc:{pid}")],
-        [InlineKeyboardButton(text=t(lang, "btn_edit_stock"), callback_data=f"mngstock_edit:{pid}")],
+        [
+            InlineKeyboardButton(text="✏️ تعديل العنوان", callback_data=f"mngtitle:{pid}"),
+            InlineKeyboardButton(text=t(lang, "btn_edit_price"), callback_data=f"mngprice:{pid}"),
+        ],
+        [
+            InlineKeyboardButton(text=t(lang, "btn_edit_desc"), callback_data=f"mngdesc:{pid}"),
+            InlineKeyboardButton(text=t(lang, "btn_edit_stock"), callback_data=f"mngstock_edit:{pid}"),
+        ],
+        [
+            InlineKeyboardButton(text="📂 تعديل التصنيف", callback_data=f"mngcat:{pid}"),
+            InlineKeyboardButton(text="🖼️ تعديل الصور", callback_data=f"mngphotos:{pid}"),
+        ],
         [InlineKeyboardButton(text=f"{t(lang, 'btn_toggle_stock')} ({stock_text})", callback_data=f"mngstock:{pid}")],
         [InlineKeyboardButton(text=t(lang, "btn_delete_prod"), callback_data=f"mngdel:{pid}")],
         [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=f"mngstore:{p.store_id}")],
     ])
-    with suppress(Exception):
+    try:
         await cb.message.edit_text(t(lang, "manage_product", title=esc(p.title)), reply_markup=kb)
+    except Exception:
+        await cb.message.answer(t(lang, "manage_product", title=esc(p.title)), reply_markup=kb)
     await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("mngtitle:"))
+async def edit_title_start(cb: CallbackQuery, state: FSMContext):
+    pid = int(cb.data.split(":")[1])
+    if not await _guard_edit(cb, pid):
+        return
+    await state.update_data(edit_pid=pid)
+    await state.set_state(EditProductFSM.title)
+    await cb.message.answer("✏️ أرسل العنوان الجديد للمنتج:")
+    await cb.answer()
+
+
+@seller_router.message(EditProductFSM.title)
+async def edit_title_save(message: Message, state: FSMContext):
+    lang = await get_lang(message.from_user.id)
+    if not message.text or not message.text.strip():
+        return await message.answer("✏️ أرسل العنوان الجديد للمنتج:")
+    data = await state.get_data()
+    pid = data.get("edit_pid")
+    if pid and await is_product_owner(message.from_user.id, pid):
+        async with Session() as s:
+            p = (await s.execute(select(Product).where(Product.id == pid))).scalar_one_or_none()
+            if p and p.status != "pending":
+                p.title = message.text.strip()[:MAX_PRODUCT_TITLE_LEN]
+                await s.commit()
+    await state.clear()
+    await message.answer(t(lang, "prod_updated"), reply_markup=await get_main_kb(message.from_user.id, lang))
+
+
+@seller_router.callback_query(F.data.startswith("mngcat:"))
+async def edit_cat_start(cb: CallbackQuery):
+    pid = int(cb.data.split(":")[1])
+    if not await _guard_edit(cb, pid):
+        return
+    lang = await get_lang(cb.from_user.id)
+    async with Session() as s:
+        cats = (await s.execute(select(Category).order_by(Category.id.asc()))).scalars().all()
+    if not cats:
+        return await cb.answer("لا توجد تصنيفات متاحة.", show_alert=True)
+    kb = [[InlineKeyboardButton(text=f"📂 {_cat_name(c, lang)}", callback_data=f"mngcat_set:{pid}:{c.id}")] for c in cats]
+    kb.append([InlineKeyboardButton(text="🚫 بدون تصنيف", callback_data=f"mngcat_set:{pid}:0")])
+    kb.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=f"mng:{pid}")])
+    try:
+        await cb.message.edit_text("📂 اختر التصنيف الجديد للمنتج:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    except Exception:
+        await cb.message.answer("📂 اختر التصنيف الجديد للمنتج:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("mngcat_set:"))
+async def edit_cat_save(cb: CallbackQuery):
+    _, pid_str, cid_str = cb.data.split(":")
+    pid, cid = int(pid_str), int(cid_str)
+    if not await _guard_edit(cb, pid):
+        return
+    async with Session() as s:
+        p = (await s.execute(select(Product).where(Product.id == pid))).scalar_one_or_none()
+        if p and p.status != "pending":
+            p.category_id = cid if cid > 0 else None
+            await s.commit()
+    await cb.answer("✅ تم تحديث التصنيف.", show_alert=True)
+    await manage_product(cb)
+
+
+@seller_router.callback_query(F.data.startswith("mngphotos:"))
+async def edit_photos_menu(cb: CallbackQuery):
+    pid = int(cb.data.split(":")[1])
+    p = await _guard_edit(cb, pid)
+    if not p:
+        return
+    lang = await get_lang(cb.from_user.id)
+    p1 = "✅ موجودة" if p.photo_file_id else "❌ فارغة"
+    p2 = "✅ موجودة" if p.photo_file_id_2 else "❌ فارغة"
+    p3 = "✅ موجودة" if p.photo_file_id_3 else "❌ فارغة"
+    text = (
+        f"🖼️ <b>إدارة صور المنتج — {esc(p.title)}</b>\n\n"
+        f"• الصورة الرئيسية (1): {p1}\n"
+        f"• الصورة الإضافية (2): {p2}\n"
+        f"• الصورة الإضافية (3): {p3}"
+    )
+    rows = [
+        [InlineKeyboardButton(text="🔄 تغيير الصورة الرئيسية (1)", callback_data=f"mngphoto_set:{pid}:1")],
+        [
+            InlineKeyboardButton(text="🔄 تغيير/إضافة الصورة (2)", callback_data=f"mngphoto_set:{pid}:2"),
+            InlineKeyboardButton(text="🗑️ حذف (2)", callback_data=f"mngphoto_rm:{pid}:2"),
+        ],
+        [
+            InlineKeyboardButton(text="🔄 تغيير/إضافة الصورة (3)", callback_data=f"mngphoto_set:{pid}:3"),
+            InlineKeyboardButton(text="🗑️ حذف (3)", callback_data=f"mngphoto_rm:{pid}:3"),
+        ],
+        [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=f"mng:{pid}")],
+    ]
+    try:
+        await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    except Exception:
+        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("mngphoto_set:"))
+async def edit_photo_upload_start(cb: CallbackQuery, state: FSMContext):
+    _, pid_str, slot_str = cb.data.split(":")
+    pid, slot = int(pid_str), int(slot_str)
+    if slot not in (1, 2, 3) or not await _guard_edit(cb, pid):
+        return
+    await state.update_data(edit_pid=pid, photo_slot=slot)
+    await state.set_state(EditProductFSM.photo_upload)
+    await cb.message.answer(f"📸 أرسل الصورة الجديدة الآن للخانة رقم <b>{slot}</b>:")
+    await cb.answer()
+
+
+@seller_router.message(EditProductFSM.photo_upload, F.photo)
+async def edit_photo_upload_save(message: Message, state: FSMContext):
+    lang = await get_lang(message.from_user.id)
+    data = await state.get_data()
+    pid, slot = data.get("edit_pid"), data.get("photo_slot")
+    await state.clear()
+    if pid and slot in (1, 2, 3) and await is_product_owner(message.from_user.id, pid):
+        attr = {1: "photo_file_id", 2: "photo_file_id_2", 3: "photo_file_id_3"}[slot]
+        async with Session() as s:
+            p = (await s.execute(select(Product).where(Product.id == pid))).scalar_one_or_none()
+            if p and p.status != "pending":
+                setattr(p, attr, message.photo[-1].file_id)
+                await s.commit()
+    await message.answer(
+        f"✅ تم تحديث الصورة رقم {slot} بنجاح.",
+        reply_markup=back_kb(lang, f"mngphotos:{pid}"),
+    )
+
+
+@seller_router.message(EditProductFSM.photo_upload, ~F.photo)
+async def edit_photo_upload_invalid(message: Message):
+    await message.answer("📸 يرجى إرسال صورة صالحة (أو /cancel للإلغاء).")
+
+
+@seller_router.callback_query(F.data.startswith("mngphoto_rm:"))
+async def edit_photo_remove(cb: CallbackQuery):
+    _, pid_str, slot_str = cb.data.split(":")
+    pid, slot = int(pid_str), int(slot_str)
+    if slot not in (2, 3) or not await _guard_edit(cb, pid):
+        return
+    attr = {2: "photo_file_id_2", 3: "photo_file_id_3"}[slot]
+    async with Session() as s:
+        p = (await s.execute(select(Product).where(Product.id == pid))).scalar_one_or_none()
+        if p and p.status != "pending":
+            setattr(p, attr, "")
+            await s.commit()
+    await cb.answer(f"🗑️ تم حذف الصورة رقم {slot}.", show_alert=True)
+    await edit_photos_menu(cb)
 
 
 @seller_router.callback_query(F.data.startswith("mngresubmit:"))
@@ -4320,6 +5521,8 @@ async def add_confirm(cb: CallbackQuery, state: FSMContext):
         return await cb.answer("⛔ غير مصرح.", show_alert=True)
     lang = await get_lang(cb.from_user.id)
     async with Session() as s:
+        store = await s.get(Store, sid)
+        auto_live = bool(store and (store.auto_approve or is_store_vip(store)))
         p = Product(
             store_id=sid,
             category_id=data.get("category_id"),
@@ -4332,23 +5535,54 @@ async def add_confirm(cb: CallbackQuery, state: FSMContext):
             photo_file_id_3=data.get("photo_3", ""),
             stock_quantity=data["stock"],
             variations=data.get("vars", ""),
-            status="pending",
+            status="approved" if auto_live else "pending",
         )
         s.add(p)
         await s.commit()
         await s.refresh(p)
         pid, ptitle, pphoto = p.id, p.title, data["photo_1"]
+        price_str = f"{p.price:g} {p.currency}"
         stock, delivery, vars_ = data["stock"], data["delivery"], data.get("vars", "") or "-"
+        store_name = store.name if store else "-"
+        followers = (
+            (await s.execute(select(StoreFollower.user_tg_id).where(StoreFollower.store_id == sid))).scalars().all()
+            if auto_live
+            else []
+        )
     await state.clear()
-    with suppress(Exception):
-        await cb.message.edit_text(t(lang, "product_submitted"))
-    await cb.message.answer(t(lang, "main_menu"), reply_markup=await get_main_kb(cb.from_user.id, lang))
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ Approve", callback_data=f"admin:approve:{pid}"),
-        InlineKeyboardButton(text="❌ Reject", callback_data=f"admin:reject:{pid}"),
-    ]])
-    caption = f"📥 New product: <b>{esc(ptitle)}</b>\nالكمية: {stock}\nالتوصيل: {delivery:g}\nالخيارات: {esc(vars_)}"
-    await notify_admins(cb.bot, caption, reply_markup=kb, photo=pphoto)
+
+    if auto_live:
+        with suppress(Exception):
+            await cb.message.edit_text(
+                f"⚡ <b>تم نشر منتجك مباشرة بنجاح!</b>\n\n📦 <b>{esc(ptitle)}</b>\nمتاح الآن للمشترين بفضل ميزة النشر المباشر / VIP."
+            )
+        await cb.message.answer(t(lang, "main_menu"), reply_markup=await get_main_kb(cb.from_user.id, lang))
+        await publish_product_to_channel(cb.bot, pid)
+        if followers:
+            async def _notify_store_followers():
+                for fid in followers:
+                    try:
+                        fl = await get_lang(fid)
+                        await cb.bot.send_message(
+                            fid,
+                            t(fl, "new_prod_follower_notify", store=esc(store_name), product=esc(ptitle), price=esc(price_str)),
+                        )
+                        await asyncio.sleep(0.05)
+                    except TelegramRetryAfter as e:
+                        await asyncio.sleep(e.retry_after + 0.5)
+                    except Exception:
+                        pass
+            asyncio.create_task(_notify_store_followers())
+    else:
+        with suppress(Exception):
+            await cb.message.edit_text(t(lang, "product_submitted"))
+        await cb.message.answer(t(lang, "main_menu"), reply_markup=await get_main_kb(cb.from_user.id, lang))
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Approve", callback_data=f"admin:approve:{pid}"),
+            InlineKeyboardButton(text="❌ Reject", callback_data=f"admin:reject:{pid}"),
+        ]])
+        caption = f"📥 New product: <b>{esc(ptitle)}</b>\nالكمية: {stock}\nالتوصيل: {delivery:g}\nالخيارات: {esc(vars_)}"
+        await notify_admins(cb.bot, caption, reply_markup=kb, photo=pphoto)
     await cb.answer()
 
 
@@ -4362,27 +5596,42 @@ async def store_orders_list(cb: CallbackQuery):
         return await cb.answer("⛔ غير مصرح.", show_alert=True)
     lang = await get_lang(cb.from_user.id)
     async with Session() as s:
+        cond = or_(Order.store_id == sid, Product.store_id == sid)
+        total = (
+            await s.execute(
+                select(func.count(Order.id))
+                .outerjoin(Product, Order.product_id == Product.id)
+                .where(cond)
+            )
+        ).scalar() or 0
+        total_pages = max(1, math.ceil(total / ITEMS_PER_PAGE))
+        page = max(1, min(page, total_pages))
         orders = (
             await s.execute(
                 select(Order)
                 .outerjoin(Product, Order.product_id == Product.id)
-                .where(or_(Order.store_id == sid, Product.store_id == sid))
+                .where(cond)
                 .order_by(Order.created_at.desc())
+                .limit(ITEMS_PER_PAGE)
+                .offset((page - 1) * ITEMS_PER_PAGE)
             )
         ).scalars().all()
-    if not orders:
+    if total == 0:
         with suppress(Exception):
             await cb.message.edit_text(t(lang, "orders_empty"), reply_markup=back_kb(lang, f"mngstore:{sid}"))
         return await cb.answer()
     icons = {"pending": "⏳", "shipped": "🚚", "completed": "✅", "cancelled": "❌"}
-    items = [(f"{icons.get(o.status, '')} طلب #{o.id} - {o.buyer_name}", f"ord_view:{o.id}") for o in orders]
+    items = [
+        (f"{icons.get(o.status, '')} طلب #{o.id} (×{o.quantity or 1}) - {o.buyer_name}", f"ord_view:{o.id}")
+        for o in orders
+    ]
     extra = [
         InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=f"mngstore:{sid}"),
         InlineKeyboardButton(text=t(lang, "btn_export_orders"), callback_data=f"st_export:{sid}"),
     ]
-    kb = build_pagination_kb(items, page, f"st_orders:{sid}", lang, extra)
+    kb = build_sql_pagination_kb(items, page, total, f"st_orders:{sid}", lang, extra_buttons=extra)
     with suppress(Exception):
-        await cb.message.edit_text(t(lang, "orders_list"), reply_markup=kb)
+        await cb.message.edit_text(f"{t(lang, 'orders_list')} ({total})", reply_markup=kb)
     await cb.answer()
 
 
@@ -4407,24 +5656,32 @@ async def export_orders(cb: CallbackQuery):
     output = io.StringIO()
     output.write("\ufeff")
     writer = csv.writer(output)
-    writer.writerow(["رقم الطلب", "التاريخ", "اسم المنتج", "الخيار", "الكمية", "سعر المنتج", "التوصيل", "الإجمالي", "اسم المشتري", "الهاتف", "العنوان", "ملاحظات", "الحالة"])
+    writer.writerow([
+        "رقم الطلب", "التاريخ", "اسم المنتج", "الخيار", "الكمية",
+        "سعر المنتج", "التوصيل", "الإجمالي", "اسم المشتري", "الهاتف",
+        "الولاية", "طريقة التوصيل", "العنوان", "ملاحظات", "التتبع", "الحالة",
+    ])
     for o, p in rows:
         p_title = p.title if p else (o.product_title or "منتج محذوف")
         p_curr = p.currency if p else (o.product_currency or DEFAULT_CURRENCY)
         total = o.price + o.delivery_fee
+        dtype = "مكتب التوصيل" if o.delivery_type == "desk" else "باب المنزل"
         writer.writerow([
             o.id,
             o.created_at.strftime("%Y-%m-%d %H:%M"),
             csv_safe(p_title),
             csv_safe(o.variation),
-            "1",
+            str(o.quantity or 1),
             f"{o.price:.2f} {p_curr}",
             f"{o.delivery_fee:g} {p_curr}",
             f"{total:.2f} {p_curr}",
             csv_safe(o.buyer_name),
             csv_safe(o.buyer_phone),
+            csv_safe(wilaya_label(o.buyer_wilaya) if o.buyer_wilaya else "-"),
+            dtype,
             csv_safe(o.buyer_address),
             csv_safe(o.buyer_note),
+            csv_safe(o.tracking_info),
             o.status,
         ])
     csv_data = output.getvalue().encode("utf-8")
@@ -4437,11 +5694,11 @@ async def order_view(cb: CallbackQuery):
     oid = int(cb.data.split(":")[1])
     if not await is_order_seller(cb.from_user.id, oid):
         return await cb.answer("⛔ غير مصرح.", show_alert=True)
-    await _render_order_view(cb, oid, lang)
+    await _render_order_view(cb.message, oid, lang, edit=True)
     await cb.answer()
 
 
-async def _render_order_view(cb: CallbackQuery, oid: int, lang: str):
+async def _render_order_view(msg_obj: Message, oid: int, lang: str, edit: bool = True):
     async with Session() as s:
         order = (await s.execute(select(Order).where(Order.id == oid))).scalar_one_or_none()
         if not order:
@@ -4456,19 +5713,30 @@ async def _render_order_view(cb: CallbackQuery, oid: int, lang: str):
         "completed": t(lang, "status_completed"),
         "cancelled": t(lang, "status_cancelled"),
     }
-    text = t(
-        lang,
-        "order_details",
-        id=oid,
-        product=p_title,
-        variation=esc(order.variation or "-"),
-        name=esc(order.buyer_name),
-        phone=esc(order.buyer_phone),
-        address=esc(order.buyer_address),
-        note=esc(order.buyer_note or "-"),
-        price=f"{order.price:.2f} {p_curr}",
-        delivery=f"{order.delivery_fee:g} {p_curr}",
-        status=sm.get(order.status, order.status),
+    dtype_label = "🏢 مكتب التوصيل (Stop Desk)" if order.delivery_type == "desk" else "🏠 باب المنزل"
+    extras = [f"🔢 الكمية: <b>{order.quantity or 1}</b>"]
+    if order.buyer_wilaya:
+        extras.append(f"🗺️ الولاية: <b>{esc(wilaya_label(order.buyer_wilaya))}</b>")
+    extras.append(f"🚚 طريقة التوصيل: {dtype_label}")
+    if order.tracking_info:
+        extras.append(f"🔎 معلومات التتبع: <code>{esc(order.tracking_info)}</code>")
+    text = (
+        t(
+            lang,
+            "order_details",
+            id=oid,
+            product=p_title,
+            variation=esc(order.variation or "-"),
+            name=esc(order.buyer_name),
+            phone=esc(order.buyer_phone),
+            address=esc(order.buyer_address),
+            note=esc(order.buyer_note or "-"),
+            price=f"{order.price:.2f} {p_curr}",
+            delivery=f"{order.delivery_fee:g} {p_curr}",
+            status=sm.get(order.status, order.status),
+        )
+        + "\n"
+        + "\n".join(extras)
     )
     back_cb = f"st_orders:{sid}:1" if sid else "menu:home"
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -4478,12 +5746,57 @@ async def _render_order_view(cb: CallbackQuery, oid: int, lang: str):
         [InlineKeyboardButton(text=t(lang, "status_cancelled"), callback_data=f"ord_st:{oid}:cancelled")],
         [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=back_cb)],
     ])
-    with suppress(Exception):
-        await cb.message.edit_text(text, reply_markup=kb)
+    if edit:
+        try:
+            await msg_obj.edit_text(text, reply_markup=kb)
+            return
+        except Exception:
+            pass
+    await msg_obj.answer(text, reply_markup=kb)
+
+
+async def _apply_order_status(bot: Bot, oid: int, new_status: str, tracking_info: Optional[str] = None) -> bool:
+    async with Session() as s:
+        order = (await s.execute(select(Order).where(Order.id == oid))).scalar_one_or_none()
+        if not order:
+            return False
+        prev_status = order.status
+        order.status = new_status
+        if tracking_info is not None:
+            order.tracking_info = tracking_info[:300]
+
+        if new_status == "cancelled" and prev_status != "cancelled" and order.product_id:
+            p = (await s.execute(select(Product).where(Product.id == order.product_id, Product.is_deleted.is_(False)))).scalar_one_or_none()
+            if p:
+                was_out = p.is_out_of_stock
+                p.stock_quantity += max(1, int(order.quantity or 1))
+                p.is_out_of_stock = False
+                if was_out:
+                    await _notify_restock_alerts(bot, s, p)
+
+        buyer_tg_id = order.buyer_tg_id
+        buyer_name = order.buyer_name
+        saved_tracking = order.tracking_info
+        await s.commit()
+
+    if new_status in ("shipped", "completed", "cancelled"):
+        with suppress(Exception):
+            bl = await get_lang(buyer_tg_id)
+            sm = {
+                "pending": t(bl, "status_pending"),
+                "shipped": t(bl, "status_shipped"),
+                "completed": t(bl, "status_completed"),
+                "cancelled": t(bl, "status_cancelled"),
+            }
+            txt = t(bl, "order_status_notify", id=oid, name=esc(buyer_name), status=sm[new_status])
+            if new_status == "shipped" and saved_tracking:
+                txt += f"\n\n🔎 <b>معلومات التتبع / شركة التوصيل:</b>\n<code>{esc(saved_tracking)}</code>"
+            await bot.send_message(buyer_tg_id, txt)
+    return True
 
 
 @seller_router.callback_query(F.data.startswith("ord_st:"))
-async def order_status_change(cb: CallbackQuery):
+async def order_status_change(cb: CallbackQuery, state: FSMContext):
     lang = await get_lang(cb.from_user.id)
     _, oid_str, new_status = cb.data.split(":")
     oid = int(oid_str)
@@ -4492,41 +5805,74 @@ async def order_status_change(cb: CallbackQuery):
     if new_status not in ("pending", "shipped", "completed", "cancelled"):
         return await cb.answer()
 
-    async with Session() as s:
-        order = (await s.execute(select(Order).where(Order.id == oid))).scalar_one_or_none()
-        if not order:
-            return await cb.answer("Not found", show_alert=True)
-        prev_status = order.status
-        order.status = new_status
+    if new_status == "shipped":
+        await state.update_data(ship_oid=oid)
+        await state.set_state(OrderShipFSM.tracking)
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⏭️ تخطي بدون رقم تتبع", callback_data=f"ord_ship_skip:{oid}")],
+        ])
+        await cb.message.answer(
+            f"🚚 <b>شحن الطلب #{oid}</b>\n\n"
+            f"أرسل رقم التتبع أو اسم شركة التوصيل (مثال: <code>Yalidine #TRK-12345</code>) ليصل للمشتري فوراً، أو اضغط تخطي:",
+            reply_markup=kb,
+        )
+        return await cb.answer()
 
-        if new_status == "cancelled" and prev_status != "cancelled" and order.product_id:
-            p = (await s.execute(select(Product).where(Product.id == order.product_id, Product.is_deleted.is_(False)))).scalar_one_or_none()
-            if p:
-                was_out = p.is_out_of_stock
-                p.stock_quantity += 1
-                p.is_out_of_stock = False
-                if was_out:
-                    await _notify_restock_alerts(cb.bot, s, p)
-
-        await s.commit()
-
-        if new_status in ("shipped", "completed", "cancelled"):
-            with suppress(Exception):
-                bl = await get_lang(order.buyer_tg_id)
-                sm = {
-                    "pending": t(bl, "status_pending"),
-                    "shipped": t(bl, "status_shipped"),
-                    "completed": t(bl, "status_completed"),
-                    "cancelled": t(bl, "status_cancelled"),
-                }
-                txt = t(bl, "order_status_notify", id=oid, name=esc(order.buyer_name), status=sm[new_status])
-                await cb.bot.send_message(order.buyer_tg_id, txt)
-
+    ok = await _apply_order_status(cb.bot, oid, new_status)
+    if not ok:
+        return await cb.answer("Not found", show_alert=True)
     await cb.answer(t(lang, "status_updated"), show_alert=True)
-    await _render_order_view(cb, oid, lang)
+    await _render_order_view(cb.message, oid, lang, edit=True)
 
 
-# ─── Seller Broadcast & Stats ───
+@seller_router.callback_query(F.data.startswith("ord_ship_skip:"))
+async def order_ship_skip(cb: CallbackQuery, state: FSMContext):
+    oid = int(cb.data.split(":")[1])
+    if not await is_order_seller(cb.from_user.id, oid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    await state.clear()
+    lang = await get_lang(cb.from_user.id)
+    await _apply_order_status(cb.bot, oid, "shipped", tracking_info="")
+    await cb.answer(t(lang, "status_updated"), show_alert=True)
+    await _render_order_view(cb.message, oid, lang, edit=True)
+
+
+@seller_router.message(OrderShipFSM.tracking)
+async def order_ship_tracking_save(message: Message, state: FSMContext):
+    lang = await get_lang(message.from_user.id)
+    data = await state.get_data()
+    oid = data.get("ship_oid")
+    await state.clear()
+    if not oid or not await is_order_seller(message.from_user.id, oid):
+        return await message.answer("⛔ غير مصرح.")
+    tracking = (message.text or "").strip()[:300]
+    await _apply_order_status(message.bot, oid, "shipped", tracking_info=tracking)
+    await message.answer(
+        f"✅ تم تحديث الطلب #{oid} إلى <b>تم الشحن</b> وإرسال رقم التتبع للمشتري.",
+        reply_markup=await get_main_kb(message.from_user.id, lang),
+    )
+    await _render_order_view(message, oid, lang, edit=False)
+
+
+# ─── Background Broadcast Runner & Seller Broadcast / Stats ───
+
+async def _run_broadcast_task(
+    source_msg: Message,
+    recipients: list[int],
+    status_msg: Message,
+    done_template: str,
+):
+    success = 0
+    failed = 0
+    for uid in recipients:
+        if await _safe_send_copy(source_msg, uid):
+            success += 1
+        else:
+            failed += 1
+        await asyncio.sleep(0.05)
+    with suppress(Exception):
+        await status_msg.edit_text(done_template.format(count=success, failed=failed))
+
 
 @seller_router.callback_query(F.data.startswith("st_broadcast:"))
 async def seller_broadcast_start(cb: CallbackQuery, state: FSMContext):
@@ -4554,16 +5900,11 @@ async def seller_broadcast_send(message: Message, state: FSMContext):
     if _broadcast_cooldown_remaining(message.from_user.id) > 0:
         return await message.answer("⏳ لا يمكن إرسال بث الآن (فترة انتظار).")
     async with Session() as s:
-        followers = (await s.execute(select(StoreFollower.user_tg_id).where(StoreFollower.store_id == sid))).scalars().all()
+        followers = list((await s.execute(select(StoreFollower.user_tg_id).where(StoreFollower.store_id == sid))).scalars().all())
     _BROADCAST_COOLDOWN[message.from_user.id] = time.time()
-    status_msg = await message.answer(t(lang, "broadcast_started"))
-    success = 0
-    for uid in followers:
-        if await _safe_send_copy(message, uid):
-            success += 1
-        await asyncio.sleep(0.05)
-    with suppress(Exception):
-        await status_msg.edit_text(t(lang, "seller_broadcast_done", count=success))
+    status_msg = await message.answer(f"{t(lang, 'broadcast_started')} ({len(followers)} متابع — يعمل في الخلفية)")
+    done_tpl = t(lang, "seller_broadcast_done", count="{count}")
+    asyncio.create_task(_run_broadcast_task(message, followers, status_msg, done_tpl))
 
 
 @seller_router.callback_query(F.data.startswith("st_stats:"))
@@ -4822,17 +6163,78 @@ async def product_ad_pkg(cb: CallbackQuery, state: FSMContext):
     pid = int(pid_str)
     if not await is_product_owner(cb.from_user.id, pid):
         return await cb.answer("⛔ غير مصرح.", show_alert=True)
-    prices = {"basic": 1000, "pro": 2000, "vip": 7000}
+    pkg_info = AD_PACKAGES.get(pkg, AD_PACKAGES["basic"])
+    price = float(pkg_info["price"])
     await state.update_data(pad_pkg=pkg)
     lang = await get_lang(cb.from_user.id)
-    text = f"{t(lang, 'ad_payment_instructions')}\n\n💰 المبلغ: {prices.get(pkg, 1000)} دج"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t(lang, "btn_send_payment_proof"), callback_data="pad_send_proof")],
-        [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="menu:home")],
-    ])
+    async with Session() as s:
+        u = await ensure_user(s, cb.from_user.id, lang)
+        await s.commit()
+        credits = float(u.ad_credits or 0.0)
+    text = (
+        f"{t(lang, 'ad_payment_instructions')}\n\n"
+        f"📦 الباقة: <b>{esc(pkg_info['label'])}</b>\n"
+        f"💰 السعر: <b>{price:g} {DEFAULT_CURRENCY}</b>\n"
+        f"💳 رصيد محفظتك الحالي: <b>{credits:g} {DEFAULT_CURRENCY}</b>"
+    )
+    rows = []
+    if credits >= price:
+        rows.append([
+            InlineKeyboardButton(
+                text=f"💳 الدفع من المحفظة ({price:g} {DEFAULT_CURRENCY}) — تفعيل فوري ⚡",
+                callback_data=f"pad_wallet_pay:{pkg}:{pid}",
+            )
+        ])
+    rows.append([InlineKeyboardButton(text=t(lang, "btn_send_payment_proof"), callback_data="pad_send_proof")])
+    rows.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="menu:home")])
     with suppress(Exception):
-        await cb.message.edit_text(text, reply_markup=kb)
+        await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
     await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("pad_wallet_pay:"))
+async def product_ad_wallet_pay(cb: CallbackQuery, state: FSMContext):
+    _, pkg, pid_str = cb.data.split(":")
+    pid = int(pid_str)
+    uid = cb.from_user.id
+    if not await is_product_owner(uid, pid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    pkg_info = AD_PACKAGES.get(pkg)
+    if not pkg_info:
+        return await cb.answer("❌ باقة غير صالحة.", show_alert=True)
+    price = float(pkg_info["price"])
+    days = int(pkg_info["days"])
+    lang = await get_lang(uid)
+
+    async with Session() as s:
+        res = await s.execute(
+            update(User)
+            .where(User.tg_id == uid, User.ad_credits >= price)
+            .values(ad_credits=User.ad_credits - price)
+        )
+        if res.rowcount == 0:
+            return await cb.answer("❌ رصيد المحفظة غير كافٍ.", show_alert=True)
+        p = await s.get(Product, pid)
+        if not p or p.is_deleted:
+            await s.rollback()
+            return await cb.answer("❌ المنتج غير موجود.", show_alert=True)
+        base_dt = p.featured_until if (p.featured_until and p.featured_until > utcnow()) else utcnow()
+        p.featured_until = base_dt + timedelta(days=days)
+        until_str = p.featured_until.strftime("%Y-%m-%d %H:%M")
+        ptitle = p.title
+        await s.commit()
+
+    await state.clear()
+    try:
+        await cb.message.edit_text(
+            f"⚡ <b>تم تفعيل الإعلان المميز فوراً من المحفظة!</b>\n\n"
+            f"📦 المنتج: <b>{esc(ptitle)}</b>\n"
+            f"💳 المخصوم: <b>{price:g} {DEFAULT_CURRENCY}</b>\n"
+            f"📅 مميز حتى: <b>{until_str} UTC</b>"
+        )
+    except Exception:
+        await cb.message.answer(f"⚡ تم تمييز المنتج <b>{esc(ptitle)}</b> حتى {until_str} UTC.")
+    await cb.answer("✅ تم التفعيل الفوري!", show_alert=True)
 
 
 @seller_router.callback_query(ProductAdFSM.select_package, F.data == "pad_send_proof")
@@ -4851,14 +6253,15 @@ async def product_ad_receive_proof(message: Message, state: FSMContext):
         await state.clear()
         return await message.answer("انتهت الجلسة، ابدأ من جديد.")
     proof = message.photo[-1].file_id
-    prices = {"basic": 1000, "pro": 2000, "vip": 7000}
+    price = float(AD_PACKAGES.get(pkg, AD_PACKAGES["basic"])["price"])
     async with Session() as s:
         areq = AdRequest(
             user_tg_id=message.from_user.id,
             ad_type="product",
             target_id=pid,
             package_name=pkg,
-            price=float(prices.get(pkg, 1000)),
+            price=price,
+            payment_proof=proof,
             status="pending",
         )
         s.add(areq)
@@ -4878,7 +6281,7 @@ async def product_ad_receive_proof(message: Message, state: FSMContext):
         "admin_ad_req_view",
         user_id=message.from_user.id,
         package=esc(pkg),
-        price=f"{prices.get(pkg, 1000)} دج",
+        price=f"{price:g} {DEFAULT_CURRENCY}",
         type=f"product #{pid} ({esc(ptitle)})",
     )
     await notify_admins(message.bot, admin_text, reply_markup=admin_kb, photo=proof)
@@ -4887,6 +6290,200 @@ async def product_ad_receive_proof(message: Message, state: FSMContext):
 @seller_router.message(ProductAdFSM.payment_proof, ~F.photo)
 async def product_ad_receive_proof_invalid(message: Message):
     await message.answer("📸 أرسل صورة إثبات الدفع:")
+
+
+# ─── Store Wallet Shortcut & Store VIP Subscriptions ───
+
+@seller_router.callback_query(F.data.startswith("st_wallet:"))
+async def store_wallet_shortcut(cb: CallbackQuery):
+    sid = int(cb.data.split(":")[1])
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    await view_wallet_for_user(cb.message, cb.from_user.id, back_cb=f"mngstore:{sid}")
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("st_vip:"))
+async def store_vip_menu(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    sid = int(cb.data.split(":")[1])
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    lang = await get_lang(cb.from_user.id)
+    async with Session() as s:
+        st = await s.get(Store, sid)
+        u = await ensure_user(s, cb.from_user.id, lang)
+        await s.commit()
+    if not st:
+        return await cb.answer("Not found", show_alert=True)
+    vip_status = (
+        f"✅ مفعل حتى <b>{st.vip_until.strftime('%Y-%m-%d')}</b>"
+        if is_store_vip(st)
+        else "❌ غير مفعل حالياً"
+    )
+    text = (
+        f"👑 <b>باقة VIP للمتجر — {esc(st.name)}</b>\n\n"
+        f"📌 الحالة الحالية: {vip_status}\n"
+        f"💳 رصيد محفظتك: <b>{float(u.ad_credits or 0):g} {DEFAULT_CURRENCY}</b>\n\n"
+        f"✨ <b>مميزات باقة VIP:</b>\n"
+        f"• 👑 شارة التاج والتوثيق تلقائياً\n"
+        f"• ⚡ نشر المنتجات مباشرة بدون انتظار موافقة الإدارة\n"
+        f"• 🏆 أولوية الظهور في أعلى قائمة المتاجر المميزة\n"
+        f"• 🏪 فتح حتى <b>{MAX_STORES_VIP} متاجر</b> بدلاً من {MAX_STORES_PER_USER}\n\n"
+        f"اختر الباقة المناسبة:"
+    )
+    rows = [
+        [InlineKeyboardButton(text=info["label"], callback_data=f"vip_buy:{sid}:{key}")]
+        for key, info in VIP_PLANS.items()
+    ]
+    rows.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=f"mngstore:{sid}")])
+    try:
+        await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    except Exception:
+        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("vip_buy:"))
+async def store_vip_choose_payment(cb: CallbackQuery):
+    _, sid_str, plan_key = cb.data.split(":")
+    sid = int(sid_str)
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    plan = VIP_PLANS.get(plan_key)
+    if not plan:
+        return await cb.answer("❌ باقة غير صالحة.", show_alert=True)
+    lang = await get_lang(cb.from_user.id)
+    async with Session() as s:
+        u = await ensure_user(s, cb.from_user.id, lang)
+        await s.commit()
+        credits = float(u.ad_credits or 0.0)
+    price = float(plan["price"])
+    text = (
+        f"👑 <b>{esc(plan['label'])}</b>\n\n"
+        f"💳 رصيد محفظتك الحالي: <b>{credits:g} {DEFAULT_CURRENCY}</b>\n\n"
+        f"{t(lang, 'ad_payment_instructions')}"
+    )
+    rows = []
+    if credits >= price:
+        rows.append([
+            InlineKeyboardButton(
+                text=f"💳 الدفع من المحفظة ({price:g} {DEFAULT_CURRENCY}) — تفعيل فوري ⚡",
+                callback_data=f"vip_wallet:{sid}:{plan_key}",
+            )
+        ])
+    rows.append([InlineKeyboardButton(text="📸 إرسال وصل دفع (CCP / BaridiMob)", callback_data=f"vip_proof:{sid}:{plan_key}")])
+    rows.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=f"st_vip:{sid}")])
+    try:
+        await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    except Exception:
+        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("vip_wallet:"))
+async def store_vip_wallet_pay(cb: CallbackQuery):
+    _, sid_str, plan_key = cb.data.split(":")
+    sid = int(sid_str)
+    uid = cb.from_user.id
+    if not await is_store_owner(uid, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    plan = VIP_PLANS.get(plan_key)
+    if not plan:
+        return await cb.answer("❌ باقة غير صالحة.", show_alert=True)
+    price = float(plan["price"])
+    days = int(plan["days"])
+    lang = await get_lang(uid)
+
+    async with Session() as s:
+        res = await s.execute(
+            update(User)
+            .where(User.tg_id == uid, User.ad_credits >= price)
+            .values(ad_credits=User.ad_credits - price)
+        )
+        if res.rowcount == 0:
+            return await cb.answer("❌ رصيد المحفظة غير كافٍ.", show_alert=True)
+        st = await s.get(Store, sid)
+        if not st:
+            await s.rollback()
+            return await cb.answer("❌ المتجر غير موجود.", show_alert=True)
+        base_dt = st.vip_until if (st.vip_until and st.vip_until > utcnow()) else utcnow()
+        st.vip_until = base_dt + timedelta(days=days)
+        st.verified = True
+        st.auto_approve = True
+        until_str = st.vip_until.strftime("%Y-%m-%d")
+        st_name = st.name
+        await s.commit()
+
+    try:
+        await cb.message.edit_text(
+            f"👑 <b>مبروك! تم تفعيل باقة VIP لمتجر {esc(st_name)} فوراً!</b>\n\n"
+            f"📅 صالح حتى: <b>{until_str}</b>\n"
+            f"⚡ تم تفعيل التوثيق والنشر المباشر تلقائياً.",
+            reply_markup=back_kb(lang, f"mngstore:{sid}"),
+        )
+    except Exception:
+        await cb.message.answer(f"👑 تم تفعيل VIP لمتجر {esc(st_name)} حتى {until_str}!")
+    await cb.answer("👑 تم التفعيل بنجاح!", show_alert=True)
+
+
+@seller_router.callback_query(F.data.startswith("vip_proof:"))
+async def store_vip_proof_prompt(cb: CallbackQuery, state: FSMContext):
+    _, sid_str, plan_key = cb.data.split(":")
+    sid = int(sid_str)
+    if not await is_store_owner(cb.from_user.id, sid) or plan_key not in VIP_PLANS:
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    await state.update_data(vip_sid=sid, vip_plan=plan_key)
+    await state.set_state(StoreVipFSM.payment_proof)
+    await cb.message.answer("📸 أرسل صورة وصل الدفع لتفعيل باقة VIP الآن (أو /cancel للإلغاء):")
+    await cb.answer()
+
+
+@seller_router.message(StoreVipFSM.payment_proof, F.photo)
+async def store_vip_receive_proof(message: Message, state: FSMContext):
+    lang = await get_lang(message.from_user.id)
+    data = await state.get_data()
+    sid, plan_key = data.get("vip_sid"), data.get("vip_plan")
+    await state.clear()
+    if not (sid and plan_key in VIP_PLANS) or not await is_store_owner(message.from_user.id, sid):
+        return await message.answer("انتهت الجلسة، ابدأ من جديد.")
+    plan = VIP_PLANS[plan_key]
+    proof = message.photo[-1].file_id
+    async with Session() as s:
+        st = await s.get(Store, sid)
+        st_name = st.name if st else f"#{sid}"
+        areq = AdRequest(
+            user_tg_id=message.from_user.id,
+            ad_type="store_vip",
+            target_id=sid,
+            package_name=plan_key,
+            price=float(plan["price"]),
+            payment_proof=proof,
+            status="pending",
+        )
+        s.add(areq)
+        await s.commit()
+        await s.refresh(areq)
+        areq_id = areq.id
+    await message.answer(t(lang, "payment_proof_received"), reply_markup=await get_main_kb(message.from_user.id, lang))
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ تأكيد وتفعيل VIP", callback_data=f"admin:confirm_payment:{areq_id}"),
+        InlineKeyboardButton(text="❌ رفض الطلب", callback_data=f"admin:reject_payment:{areq_id}"),
+    ]])
+    await notify_admins(
+        message.bot,
+        f"👑 <b>طلب اشتراك VIP جديد #{areq_id}</b>\n"
+        f"🏪 المتجر: <b>{esc(st_name)}</b> (#{sid})\n"
+        f"👤 البائع: <code>{message.from_user.id}</code>\n"
+        f"📦 الباقة: <b>{esc(plan['label'])}</b>",
+        reply_markup=admin_kb,
+        photo=proof,
+    )
+
+
+@seller_router.message(StoreVipFSM.payment_proof, ~F.photo)
+async def store_vip_proof_invalid(message: Message):
+    await message.answer("📸 يرجى إرسال صورة وصل الدفع (أو /cancel للإلغاء).")
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -4992,21 +6589,26 @@ async def admin_approve_product(cb: CallbackQuery):
         with suppress(Exception):
             sl = await get_lang(owner_id)
             await cb.bot.send_message(owner_id, t(sl, "product_approved_notify", title=esc(ptitle)))
-    for fid in followers:
-        try:
-            fl = await get_lang(fid)
-            await cb.bot.send_message(
-                fid,
-                t(fl, "new_prod_follower_notify", store=esc(store_name), product=esc(ptitle), price=esc(price_str)),
-            )
-            await asyncio.sleep(0.05)
-        except TelegramRetryAfter as e:
-            await asyncio.sleep(e.retry_after + 0.5)
-        except Exception:
-            pass
+    posted_ch = await publish_product_to_channel(cb.bot, pid)
+    if followers:
+        async def _notify_approved_followers():
+            for fid in followers:
+                try:
+                    fl = await get_lang(fid)
+                    await cb.bot.send_message(
+                        fid,
+                        t(fl, "new_prod_follower_notify", store=esc(store_name), product=esc(ptitle), price=esc(price_str)),
+                    )
+                    await asyncio.sleep(0.05)
+                except TelegramRetryAfter as e:
+                    await asyncio.sleep(e.retry_after + 0.5)
+                except Exception:
+                    pass
+        asyncio.create_task(_notify_approved_followers())
     with suppress(Exception):
         await cb.message.edit_reply_markup(reply_markup=None)
-    await cb.message.answer("✅ " + t("ar", "approved"))
+    ch_note = "\n📢 تم النشر تلقائياً في القناة." if posted_ch else ""
+    await cb.message.answer("✅ " + t("ar", "approved") + ch_note)
     await cb.answer()
 
 
@@ -5286,11 +6888,19 @@ async def admin_store_view(cb: CallbackQuery):
         if not st:
             return await cb.answer("Not found", show_alert=True)
         pcount = (await s.execute(select(func.count(Product.id)).where(Product.store_id == sid, Product.is_deleted.is_(False)))).scalar()
+    vip_str = (
+        f"👑 مفعل حتى {st.vip_until.strftime('%Y-%m-%d')}"
+        if is_store_vip(st)
+        else "❌ غير مفعل"
+    )
+    auto_str = "⚡ مفعل" if (st.auto_approve or is_store_vip(st)) else "❌ متوقف"
     text = (
         f"🏪 <b>{esc(st.name)}</b>\n\n"
         f"👤 المالك: <code>{st.owner_tg_id}</code>\n"
         f"📦 المنتجات: {pcount}\n"
-        f"📌 الحالة: {'✅ موثق' if st.verified else '❌ غير موثق'}\n"
+        f"📌 التوثيق: {'✅ موثق' if st.verified else '❌ غير موثق'}\n"
+        f"👑 VIP: {vip_str}\n"
+        f"⚡ النشر المباشر: {auto_str}\n"
         f"📝 {esc(st.bio or '-')}"
     )
     action_btn = (
@@ -5298,8 +6908,14 @@ async def admin_store_view(cb: CallbackQuery):
         if st.verified
         else InlineKeyboardButton(text=t(lang, "btn_verify"), callback_data=f"admin:verify_store:{sid}")
     )
+    auto_btn = InlineKeyboardButton(
+        text="⚡ إيقاف النشر المباشر" if st.auto_approve else "⚡ تفعيل النشر المباشر",
+        callback_data=f"admin:toggle_auto:{sid}",
+    )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [action_btn],
+        [InlineKeyboardButton(text="👑 منح/تمديد VIP (+30 يوم)", callback_data=f"admin:vip_store:{sid}")],
+        [auto_btn],
         [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="admin:stores")],
     ])
     try:
@@ -5337,7 +6953,48 @@ async def admin_unverify_store(cb: CallbackQuery):
     await admin_store_view(cb)
 
 
-# ─── Admin Broadcast ───
+@seller_router.callback_query(F.data.startswith("admin:vip_store:"))
+async def admin_vip_store(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    sid = int(cb.data.split(":")[2])
+    owner_id, st_name, until_str = None, "", ""
+    async with Session() as s:
+        st = await s.get(Store, sid)
+        if st:
+            base = st.vip_until if (st.vip_until and st.vip_until > utcnow()) else utcnow()
+            st.vip_until = base + timedelta(days=30)
+            st.verified = True
+            st.auto_approve = True
+            owner_id, st_name, until_str = st.owner_tg_id, st.name, st.vip_until.strftime("%Y-%m-%d")
+            await s.commit()
+    if owner_id:
+        with suppress(Exception):
+            await cb.bot.send_message(
+                owner_id,
+                f"👑 <b>تهانينا! تم تفعيل/تمديد باقة VIP لمتجرك {esc(st_name)} من قِبل الإدارة!</b>\n📅 صالح حتى: <b>{until_str}</b>",
+            )
+    await cb.answer("👑 تم منح/تمديد VIP لمدة 30 يوماً.", show_alert=True)
+    await admin_store_view(cb)
+
+
+@seller_router.callback_query(F.data.startswith("admin:toggle_auto:"))
+async def admin_toggle_auto_approve(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    sid = int(cb.data.split(":")[2])
+    new_val = False
+    async with Session() as s:
+        st = await s.get(Store, sid)
+        if st:
+            st.auto_approve = not bool(st.auto_approve)
+            new_val = st.auto_approve
+            await s.commit()
+    await cb.answer("⚡ تم تفعيل النشر المباشر." if new_val else "⏸️ تم إيقاف النشر المباشر.", show_alert=True)
+    await admin_store_view(cb)
+
+
+# ─── Admin Broadcast (Background Task) ───
 
 @seller_router.callback_query(F.data == "admin:broadcast")
 async def admin_broadcast_start(cb: CallbackQuery, state: FSMContext):
@@ -5362,16 +7019,11 @@ async def admin_broadcast_send(message: Message, state: FSMContext):
         return await message.answer("⏳ لا يمكن إرسال بث الآن (فترة انتظار).")
     await state.clear()
     async with Session() as s:
-        users = (await s.execute(select(User.tg_id))).scalars().all()
+        users = list((await s.execute(select(User.tg_id))).scalars().all())
     _BROADCAST_COOLDOWN[message.from_user.id] = time.time()
-    status = await message.answer(t("ar", "broadcast_started"))
-    success = 0
-    for uid in users:
-        if await _safe_send_copy(message, uid):
-            success += 1
-        await asyncio.sleep(0.05)
-    with suppress(Exception):
-        await status.edit_text(t("ar", "broadcast_done", count=success))
+    status = await message.answer(f"{t('ar', 'broadcast_started')} ({len(users)} مستخدم — يعمل في الخلفية)")
+    done_tpl = t("ar", "broadcast_done", count="{count}")
+    asyncio.create_task(_run_broadcast_task(message, users, status, done_tpl))
 
 
 # ─── Admin Support Tickets (reply + close) ───
@@ -5544,7 +7196,7 @@ async def admin_botad_reject(cb: CallbackQuery):
         await cb.message.edit_reply_markup(reply_markup=None)
 
 
-# ─── Admin Payment Requests (fixed: no double-crediting) ───
+# ─── Admin Payment Requests (Product Ads, Wallet Top-up, Store VIP) ───
 
 @seller_router.callback_query(F.data == "admin:adreqs")
 async def admin_adreqs(cb: CallbackQuery):
@@ -5555,13 +7207,15 @@ async def admin_adreqs(cb: CallbackQuery):
         reqs = (await s.execute(select(AdRequest).where(AdRequest.status == "pending").order_by(AdRequest.created_at.desc()))).scalars().all()
     if not reqs:
         return await cb.answer("لا توجد طلبات دفع معلقة.", show_alert=True)
+    type_labels = {"product": "📢 تمييز منتج", "wallet_topup": "💳 شحن محفظة", "store_vip": "👑 باقة VIP"}
     text = t(lang, "ad_requests_pending") + "\n\n"
     kb = []
     for r in reqs:
-        text += f"#{r.id} • user <code>{r.user_tg_id}</code>\nالباقة: {esc(r.package_name)} • {r.price:.0f} دج\n\n"
+        tl = type_labels.get(r.ad_type, r.ad_type)
+        text += f"#{r.id} • {tl} • user <code>{r.user_tg_id}</code>\nالباقة: {esc(r.package_name)} • {r.price:.0f} {DEFAULT_CURRENCY}\n\n"
         kb.append([
-            InlineKeyboardButton(text=f"💰 #{r.id}", callback_data=f"admin:confirm_payment:{r.id}"),
-            InlineKeyboardButton(text=f"❌ #{r.id}", callback_data=f"admin:reject_payment:{r.id}"),
+            InlineKeyboardButton(text=f"💰 تأكيد #{r.id}", callback_data=f"admin:confirm_payment:{r.id}"),
+            InlineKeyboardButton(text=f"❌ رفض #{r.id}", callback_data=f"admin:reject_payment:{r.id}"),
         ])
     kb.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="menu:admin")])
     try:
@@ -5577,43 +7231,71 @@ async def admin_confirm_payment(cb: CallbackQuery):
         return await cb.answer("غير مصرح", show_alert=True)
     areq_id = int(cb.data.split(":")[2])
 
-    PACKAGE_DAYS = {"basic": 3, "pro": 7, "vip": 30}
-    PACKAGE_LABEL = {"basic": "أساسية (3 أيام)", "pro": "احترافية (7 أيام)", "vip": "VIP (30 يوم)"}
-
     async with Session() as s:
         areq = (await s.execute(select(AdRequest).where(AdRequest.id == areq_id))).scalar_one_or_none()
         if not areq or areq.status != "pending":
             return await cb.answer("Not found أو تمت معالجته.", show_alert=True)
 
-        days = PACKAGE_DAYS.get(areq.package_name, 3)
-        label = PACKAGE_LABEL.get(areq.package_name, "أساسية")
         areq.status = "approved"
+        user_id = areq.user_tg_id
+        user_msg = ""
+        admin_alert = "✅ تم التأكيد."
 
-        ptitle, new_until = None, None
         if areq.ad_type == "product":
+            pkg = AD_PACKAGES.get(areq.package_name, AD_PACKAGES["basic"])
+            days = int(pkg["days"])
+            label = pkg["label"]
             prod = (await s.execute(select(Product).where(Product.id == areq.target_id, Product.is_deleted.is_(False)))).scalar_one_or_none()
             if prod:
                 now = utcnow()
                 base = prod.featured_until if (prod.featured_until and prod.featured_until > now) else now
                 prod.featured_until = base + timedelta(days=days)
-                ptitle, new_until = prod.title, prod.featured_until
+                user_msg = (
+                    f"✅ تم تأكيد دفعك! (باقة {label})\n"
+                    f"⭐ منتجك <b>{esc(prod.title)}</b> أصبح مميزاً لمدة <b>{days}</b> أيام، حتى <b>{prod.featured_until.strftime('%Y-%m-%d')}</b>."
+                )
+            else:
+                user_msg = f"✅ تم تأكيد دفعك لباقة {label}."
+            admin_alert = f"✅ تم تأكيد تمييز المنتج ({days} يوم)."
+
+        elif areq.ad_type == "store_vip":
+            plan = VIP_PLANS.get(areq.package_name, VIP_PLANS["vip_30"])
+            days = int(plan["days"])
+            st = await s.get(Store, areq.target_id)
+            if st:
+                now = utcnow()
+                base = st.vip_until if (st.vip_until and st.vip_until > now) else now
+                st.vip_until = base + timedelta(days=days)
+                st.verified = True
+                st.auto_approve = True
+                user_msg = (
+                    f"👑 <b>مبروك! تم تأكيد وتفعيل باقة VIP لمتجرك {esc(st.name)}!</b>\n"
+                    f"📅 صالح حتى: <b>{st.vip_until.strftime('%Y-%m-%d')}</b>\n"
+                    f"⚡ تم تفعيل التوثيق والنشر المباشر تلقائياً."
+                )
+            else:
+                user_msg = "👑 تم تأكيد اشتراك VIP الخاص بك."
+            admin_alert = f"👑 تم تفعيل VIP للمتجر ({days} يوم)."
+
         else:
-            # Credit user balance only if this was a top-up rather than an already-applied product boost
-            u = (await s.execute(select(User).where(User.tg_id == areq.user_tg_id))).scalar_one_or_none()
-            if u:
-                u.ad_credits = float(u.ad_credits or 0.0) + float(areq.price)
+            # wallet_topup
+            u = await ensure_user(s, areq.user_tg_id, DEFAULT_LANG)
+            u.ad_credits = float(u.ad_credits or 0.0) + float(areq.price)
+            new_bal = u.ad_credits
+            user_msg = (
+                f"💳 <b>تم شحن محفظتك بنجاح!</b>\n"
+                f"➕ المبلغ المضاف: <b>{areq.price:g} {DEFAULT_CURRENCY}</b>\n"
+                f"💰 رصيدك الحالي: <b>{new_bal:g} {DEFAULT_CURRENCY}</b>"
+            )
+            admin_alert = f"💳 تم شحن {areq.price:g} {DEFAULT_CURRENCY} لمحفظة المستخدم."
 
         await s.commit()
-        user_id = areq.user_tg_id
 
-    if user_id:
+    if user_id and user_msg:
         with suppress(Exception):
-            txt = f"✅ تم تأكيد دفعك! (باقة {label})"
-            if ptitle and new_until:
-                txt += f"\n⭐ منتجك <b>{esc(ptitle)}</b> أصبح مميزاً لمدة <b>{days}</b> أيام، حتى <b>{new_until.strftime('%Y-%m-%d')}</b>."
-            await cb.bot.send_message(user_id, txt)
+            await cb.bot.send_message(user_id, user_msg)
 
-    await cb.answer(f"✅ تم التأكيد ({days} يوم).", show_alert=True)
+    await cb.answer(admin_alert, show_alert=True)
     with suppress(Exception):
         await cb.message.edit_reply_markup(reply_markup=None)
 
@@ -5635,6 +7317,108 @@ async def admin_reject_payment(cb: CallbackQuery):
     await cb.answer("❌ تم الرفض.", show_alert=True)
     with suppress(Exception):
         await cb.message.edit_reply_markup(reply_markup=None)
+
+
+# ─── Admin Auto-Post Channel Management ───
+
+@seller_router.callback_query(F.data == "admin:channel")
+async def admin_channel_menu(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    await state.clear()
+    lang = await get_lang(cb.from_user.id)
+    ch = (await get_setting("auto_channel_id", "")).strip()
+    status_line = f"📌 القناة الحالية: <code>{esc(ch)}</code>" if ch else "📌 القناة الحالية: <b>غير مفعّلة</b>"
+    text = (
+        f"📢 <b>إعدادات قناة النشر التلقائي</b>\n\n"
+        f"{status_line}\n\n"
+        f"💡 عند ربط قناة (مع رفع البوت كمشرف فيها)، سيتم نشر كل منتج جديد يُوافق عليه تلقائياً مع صورته وسعره وزر للطلب المباشر داخل البوت!"
+    )
+    rows = [
+        [InlineKeyboardButton(text="✏️ تعيين / تغيير القناة", callback_data="admin:channel_set")],
+    ]
+    if ch:
+        rows.append([InlineKeyboardButton(text="🧪 إرسال رسالة تجريبية للقناة", callback_data="admin:channel_test")])
+        rows.append([InlineKeyboardButton(text="🗑️ إيقاف النشر التلقائي", callback_data="admin:channel_clear")])
+    rows.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="menu:admin")])
+    try:
+        await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    except Exception:
+        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data == "admin:channel_set")
+async def admin_channel_set_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    await state.set_state(AdminChannelFSM.channel_id)
+    await cb.message.answer(
+        "📢 أرسل معرف القناة (مثال: <code>@MyMarketChannel</code> أو <code>-1001234567890</code>).\n"
+        "⚠️ تأكد من إضافة البوت كمشرف في القناة أولاً."
+    )
+    await cb.answer()
+
+
+@seller_router.message(AdminChannelFSM.channel_id)
+async def admin_channel_set_save(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        await state.clear()
+        return
+    raw = (message.text or "").strip()
+    if not (raw.startswith("@") or (raw.startswith("-100") and raw[1:].isdigit())):
+        return await message.answer("❌ صيغة غير صحيحة. أرسل معرفاً مثل <code>@MyChannel</code> أو <code>-1001234567890</code>.")
+    await set_setting("auto_channel_id", raw)
+    await state.clear()
+    await message.answer(
+        f"✅ تم ربط قناة النشر التلقائي بنجاح: <code>{esc(raw)}</code>",
+        reply_markup=back_kb(await get_lang(message.from_user.id), "admin:channel"),
+    )
+
+
+@seller_router.callback_query(F.data == "admin:channel_test")
+async def admin_channel_test(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    ch = (await get_setting("auto_channel_id", "")).strip()
+    if not ch:
+        return await cb.answer("لا توجد قناة مربوطة.", show_alert=True)
+    try:
+        await cb.bot.send_message(ch, "✅ <b>رسالة تجريبية:</b> تم ربط القناة بنجاح بنظام النشر التلقائي للمتجر!")
+        await cb.answer("✅ تم إرسال الرسالة التجريبية بنجاح!", show_alert=True)
+    except Exception as e:
+        await cb.answer(f"❌ فشل الإرسال: تأكد أن البوت مشرف في القناة ({str(e)[:80]})", show_alert=True)
+
+
+@seller_router.callback_query(F.data == "admin:channel_clear")
+async def admin_channel_clear(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    await set_setting("auto_channel_id", "")
+    await cb.answer("🗑️ تم إيقاف النشر التلقائي في القناة.", show_alert=True)
+    await admin_channel_menu(cb, state)
+
+
+# ─── Admin Manual Database Backup ───
+
+@seller_router.message(Command("backup"))
+async def cmd_admin_backup(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    await message.answer("⏳ جاري إنشاء نسخة احتياطية آمنة من قاعدة البيانات...")
+    ok = await send_backup_to_admins(message.bot, target_chat_id=message.from_user.id, auto=False)
+    if not ok:
+        await message.answer("❌ تعذر إنشاء النسخة الاحتياطية.")
+
+
+@seller_router.callback_query(F.data == "admin:backup")
+async def admin_backup_cb(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    await cb.answer("⏳ جاري إنشاء وإرسال النسخة الاحتياطية...", show_alert=True)
+    ok = await send_backup_to_admins(cb.bot, target_chat_id=cb.from_user.id, auto=False)
+    if not ok:
+        await cb.message.answer("❌ تعذر إنشاء النسخة الاحتياطية.")
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -5718,6 +7502,20 @@ async def abandoned_cart_task(bot: Bot) -> None:
             logger.exception("Unexpected error in abandoned_cart_task")
 
 
+async def daily_backup_task(bot: Bot) -> None:
+    """Automatically send a safe SQLite WAL backup to admins once every 24 hours."""
+    while True:
+        try:
+            await asyncio.sleep(86400)
+            logger.info("Running daily automatic database backup...")
+            await send_backup_to_admins(bot, auto=True)
+        except asyncio.CancelledError:
+            logger.info("daily_backup_task cancelled")
+            raise
+        except Exception:
+            logger.exception("Unexpected error in daily_backup_task")
+
+
 async def global_error_handler(event: ErrorEvent) -> bool:
     logger.exception("Unhandled error: %s", event.exception)
     upd = event.update
@@ -5762,7 +7560,7 @@ async def main() -> None:
         token=BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
-    bg_task: asyncio.Task | None = None
+    bg_tasks: list[asyncio.Task] = []
 
     try:
         me = await bot.get_me()
@@ -5778,14 +7576,15 @@ async def main() -> None:
         dp.include_router(seller_router)
         dp.errors.register(global_error_handler)
 
-        bg_task = asyncio.create_task(abandoned_cart_task(bot))
+        bg_tasks.append(asyncio.create_task(abandoned_cart_task(bot)))
+        bg_tasks.append(asyncio.create_task(daily_backup_task(bot)))
         await dp.start_polling(bot)
 
     finally:
-        if bg_task is not None:
-            bg_task.cancel()
+        for task in bg_tasks:
+            task.cancel()
             with suppress(asyncio.CancelledError):
-                await bg_task
+                await task
         with suppress(Exception):
             await bot.session.close()
         if _engine is not None:
