@@ -130,11 +130,28 @@ ALGERIA_WILAYAS: Final[dict[str, str]] = {
     "56": "جانت", "57": "المغير", "58": "المنيعة",
 }
 
+ALGERIA_WILAYAS_FR: Final[dict[str, str]] = {
+    "01": "Adrar", "02": "Chlef", "03": "Laghouat", "04": "Oum El Bouaghi", "05": "Batna",
+    "06": "Béjaïa", "07": "Biskra", "08": "Béchar", "09": "Blida", "10": "Bouira",
+    "11": "Tamanrasset", "12": "Tébessa", "13": "Tlemcen", "14": "Tiaret", "15": "Tizi Ouzou",
+    "16": "Alger", "17": "Djelfa", "18": "Jijel", "19": "Sétif", "20": "Saïda",
+    "21": "Skikda", "22": "Sidi Bel Abbès", "23": "Annaba", "24": "Guelma", "25": "Constantine",
+    "26": "Médéa", "27": "Mostaganem", "28": "M'Sila", "29": "Mascara", "30": "Ouargla",
+    "31": "Oran", "32": "El Bayadh", "33": "Illizi", "34": "Bordj Bou Arréridj", "35": "Boumerdès",
+    "36": "El Tarf", "37": "Tindouf", "38": "Tissemsilt", "39": "El Oued", "40": "Khenchela",
+    "41": "Souk Ahras", "42": "Tipaza", "43": "Mila", "44": "Aïn Defla", "45": "Naâma",
+    "46": "Aïn Témouchent", "47": "Ghardaïa", "48": "Relizane", "49": "Timimoun", "50": "Bordj Badji Mokhtar",
+    "51": "Ouled Djellal", "52": "Béni Abbès", "53": "In Salah", "54": "In Guezzam", "55": "Touggourt",
+    "56": "Djanet", "57": "El M'Ghair", "58": "El Meniaa",
+}
 
-def wilaya_label(code: str) -> str:
-    c = (code or "").strip().zfill(2) if (code or "").strip().isdigit() else (code or "").strip()
-    name = ALGERIA_WILAYAS.get(c)
-    return f"{c} - {name}" if name else (code or "-")
+
+def wilaya_label(code: str, lang: str = "ar") -> str:
+    raw = (code or "").strip()
+    c = raw.zfill(2) if raw.isdigit() else raw
+    lookup = ALGERIA_WILAYAS_FR if lang in ("fr", "en") else ALGERIA_WILAYAS
+    name = lookup.get(c)
+    return f"{c} - {name}" if name else (raw or "-")
 
 MAX_STORE_NAME_LEN: Final[int] = 100
 MAX_STORE_BIO_LEN: Final[int] = 500
@@ -520,6 +537,29 @@ TEXTS: dict[str, dict[str, str]] = {
         "btn_close_ticket": "🔒 إغلاق التذكرة",
         "ticket_closed": "🔒 تم إغلاق التذكرة.",
         "ticket_reply_prompt": "أدخل ردك على التذكرة:",
+        "btn_vip_pkg": "👑 باقة VIP",
+        "btn_wallet": "💳 محفظتي",
+        "btn_admin_channel": "📢 قناة النشر التلقائي",
+        "btn_admin_backup": "💾 نسخ احتياطي",
+        "analytics_period_7": "📅 آخر 7 أيام",
+        "analytics_period_30": "🗓️ آخر 30 يوماً",
+        "analytics_period_0": "♾️ كل الأوقات",
+        "analytics_export_csv": "📥 تصدير تقرير التحليلات (CSV)",
+        "analytics_refresh": "🔄 تحديث التقرير",
+        "analytics_store_title": "📊 <b>تقارير وتحليلات المتجر</b>",
+        "analytics_platform_title": "📊 <b>تقارير وتحليلات المنصة</b>",
+        "analytics_period_lbl": "⏱️ الفترة",
+        "analytics_overview": "📌 <b>ملخص الأداء:</b>",
+        "analytics_orders_breakdown": "📦 <b>توزيع حالات الطلبات:</b>",
+        "analytics_daily_trend": "📈 <b>تطور المبيعات اليومي:</b>",
+        "analytics_top_wilayas": "🗺️ <b>أكثر الولايات طلباً:</b>",
+        "analytics_delivery_split": "🚚 <b>توزيع طرق التوصيل:</b>",
+        "analytics_top_products": "🏆 <b>أكثر المنتجات مبيعاً وربحاً:</b>",
+        "analytics_top_stores": "🏪 <b>أفضل المتاجر مبيعاً:</b>",
+        "analytics_no_data": "لا توجد بيانات كافية في هذه الفترة.",
+        "analytics_home_lbl": "🏠 للمنزل",
+        "analytics_desk_lbl": "🏢 للمكتب (Stop Desk)",
+        "analytics_csv_caption": "📊 <b>تقرير التحليلات الشامل ({period})</b>\n📅 {date} UTC",
     },
     "en": {
         "choose_lang": "🌐 Choose your language:",
@@ -837,54 +877,369 @@ TEXTS: dict[str, dict[str, str]] = {
         "btn_close_ticket": "🔒 Close ticket",
         "ticket_closed": "🔒 Ticket closed.",
         "ticket_reply_prompt": "Enter your reply to the ticket:",
+        "btn_vip_pkg": "👑 VIP Plan",
+        "btn_wallet": "💳 My Wallet",
+        "btn_admin_channel": "📢 Auto-Post Channel",
+        "btn_admin_backup": "💾 DB Backup",
+        "analytics_period_7": "📅 Last 7 days",
+        "analytics_period_30": "🗓️ Last 30 days",
+        "analytics_period_0": "♾️ All time",
+        "analytics_export_csv": "📥 Export Analytics (CSV)",
+        "analytics_refresh": "🔄 Refresh report",
+        "analytics_store_title": "📊 <b>Store Analytics & Reports</b>",
+        "analytics_platform_title": "📊 <b>Platform Analytics & Reports</b>",
+        "analytics_period_lbl": "⏱️ Period",
+        "analytics_overview": "📌 <b>Performance Overview:</b>",
+        "analytics_orders_breakdown": "📦 <b>Order Status Breakdown:</b>",
+        "analytics_daily_trend": "📈 <b>Daily Sales Trend:</b>",
+        "analytics_top_wilayas": "🗺️ <b>Top Ordering Wilayas:</b>",
+        "analytics_delivery_split": "🚚 <b>Delivery Methods Split:</b>",
+        "analytics_top_products": "🏆 <b>Top Products by Revenue:</b>",
+        "analytics_top_stores": "🏪 <b>Top Performing Stores:</b>",
+        "analytics_no_data": "No data available for this period.",
+        "analytics_home_lbl": "🏠 Home Delivery",
+        "analytics_desk_lbl": "🏢 Stop Desk",
+        "analytics_csv_caption": "📊 <b>Full Analytics Report ({period})</b>\n📅 {date} UTC",
     },
     "fr": {
         "choose_lang": "🌐 Choisissez votre langue :",
         "lang_set": "✅ Langue définie sur le français",
+        "welcome": (
+            "🌟 <b>Bienvenue sur Market Bot !</b> 🌟\n\n"
+            "Votre plateforme e-commerce complète sur Telegram. Que vous soyez vendeur à la recherche de clients ou acheteur en quête des meilleures offres — nous rendons votre expérience plus simple et plus rapide !\n\n"
+            "🛍️ <b>Pour l'acheteur :</b> parcourez les produits, ajoutez au panier et suivez vos commandes en toute simplicité.\n"
+            "🚀 <b>Pour le vendeur :</b> ouvrez votre boutique gratuitement, ajoutez vos produits et gérez vos commandes au même endroit.\n\n"
+            "Choisissez dans le menu ci-dessous pour commencer 👇"
+        ),
         "main_menu": "🏠 <b>Menu Principal</b>",
         "btn_buyer_section": "🛍️ Acheteur",
         "btn_seller_section": "🏪 Vendeur",
         "btn_profile_section": "👤 Mon Compte",
         "btn_admin": "👨‍💼 Admin",
-        "btn_ads_section": "📢 Publicités",
+        "buyer_menu_title": "🛍️ <b>Espace Acheteur</b>\n\nDécouvrez les meilleurs produits et parcourez les boutiques :",
+        "seller_menu_title": "🏪 <b>Espace Vendeur</b>\n\nGérez votre boutique, vos produits et vos commandes :",
+        "choose_store": "\n\nVous avez plusieurs boutiques, choisissez celle à gérer :",
+        "add_new_store": "➕ Ouvrir une nouvelle boutique",
+        "max_stores_reached": "⚠️ Vous avez atteint le maximum autorisé (3 boutiques)",
         "btn_browse": "🛍️ Parcourir les produits",
         "btn_browse_cats": "📂 Par catégorie",
         "btn_search": "🔎 Rechercher un produit",
-        "btn_search_store": "🏪 Rechercher un magasin",
+        "btn_search_store": "🏪 Rechercher une boutique",
         "btn_cart": "🛒 Panier",
         "btn_my_orders": "📦 Mes commandes",
+        "btn_mystore": "🏪 Ma boutique",
+        "btn_become_seller": "🚀 Devenir vendeur (ouvrir une boutique)",
+        "btn_account": "👤 Mon compte",
+        "btn_profile": "👤 Mon profil",
         "btn_favorites": "❤️ Favoris",
-        "btn_top_stores": "🏪 Annuaire des magasins",
+        "btn_top_stores": "🏪 Annuaire des boutiques",
         "btn_support": "🆘 Support",
         "btn_lang": "🌐 Langue",
-        "btn_become_seller": "🚀 Devenir vendeur",
-        "btn_add_product": "➕ Ajouter un produit",
-        "btn_my_products": "📦 Mes produits",
-        "btn_my_stats": "📊 Mes statistiques",
-        "btn_settings": "⚙️ Paramètres du magasin",
+        "account_menu": "⚙️ <b>Mon Compte et Paramètres</b>\n\nAccédez à toutes vos options ici :",
+        "sponsored_ad": "📢 <b>Annonce Sponsorisée</b>",
+        "btn_ads_section": "📢 Publicités",
+        "ads_menu_title": "📢 <b>Espace Publicités</b>\n\nDécouvrez les meilleures offres, ou faites la promotion de votre produit et de votre bot ici :",
+        "btn_browse_featured": "⭐ Produits en vedette",
+        "btn_browse_bot_ads": "🤖 Annonces de bots",
+        "btn_create_bot_ad": "➕ Promouvoir votre bot ici",
+        "btn_buy_product_ad": "📢 Mettre un produit en vedette",
+        "featured_products_title": "⭐ <b>Produits en Vedette</b>\n\nCes produits sont mis en avant par leurs vendeurs :",
+        "bot_ads_title": "🤖 <b>Annonces de Bots</b>\n\nDécouvrez les meilleurs bots Telegram :",
+        "no_bot_ads": "Aucune annonce de bot pour le moment.",
+        "bot_ad_name": "🤖 Entrez le nom du bot :",
+        "bot_ad_username": "🔗 Entrez le nom d'utilisateur du bot (sans @) [ex : MonSuperBot] :",
+        "bot_ad_desc": "📝 Entrez une description attractive (que fait le bot ?) :",
+        "bot_ad_photo": "🖼️ Envoyez le logo ou la photo du bot (obligatoire) :",
+        "bot_ad_review": "📋 <b>Aperçu de l'annonce</b>\n\nNom : {name}\nUtilisateur : @{username}\nDescription : {desc}\n\nVotre demande sera envoyée à l'administrateur pour validation.",
+        "bot_ad_submitted": "✅ Annonce envoyée pour validation. Elle apparaîtra après approbation.",
+        "ad_packages_title": "💎 <b>Forfaits Produit en Vedette</b>\n\nChoisissez le forfait qui vous convient pour promouvoir votre produit :",
+        "ad_pkg_basic": "🥉 Basique (3 jours) - 1000 DZD",
+        "ad_pkg_pro": "🥈 Pro (7 jours) - 2000 DZD",
+        "ad_pkg_vip": "🥇 VIP (30 jours) - 7000 DZD",
+        "ad_payment_instructions": (
+            "💳 <b>Instructions de paiement :</b>\n\n"
+            "1️⃣ Transférez le montant vers : <code>0000000000</code>\n"
+            "2️⃣ Envoyez une capture d'écran du reçu de paiement.\n"
+            "3️⃣ Après vérification, la promotion sera activée."
+        ),
+        "btn_send_payment_proof": "📸 Envoyer le reçu de paiement",
+        "payment_proof_received": "✅ Reçu de paiement bien reçu. Il sera vérifié sous peu.",
+        "btn_manage_bot_ads": "🤖 Gérer les annonces de bots",
+        "btn_manage_ad_requests": "💰 Demandes de paiement",
+        "bot_ads_pending": "⏳ Annonces de bots en attente :",
+        "ad_requests_pending": "⏳ Demandes de paiement en attente :",
+        "btn_approve_bot_ad": "✅ Approuver",
+        "btn_reject_bot_ad": "❌ Rejeter",
+        "btn_confirm_payment": "💰 Confirmer le paiement",
+        "admin_bot_ad_view": "🤖 <b>Vérification d'annonce Bot</b>\n\nNom : {name}\nUtilisateur : @{username}\nDescription : {desc}\n",
+        "admin_ad_req_view": "💰 <b>Nouvelle Demande de Paiement</b>\n\nUtilisateur : <code>{user_id}</code>\nForfait : {package}\nMontant : {price}\nType : {type}\n\nVeuillez vérifier le reçu et confirmer.",
         "btn_back": "🔙 Retour",
         "btn_cancel": "❌ Annuler",
         "btn_confirm": "✅ Confirmer",
         "btn_approve": "✅ Approuver",
         "btn_reject": "❌ Rejeter",
-        "btn_next": "➡️ Suivant",
-        "btn_prev": "⬅️ Précédent",
-        "page_info": "Page {current} sur {total}",
-        "no_products": "Aucun produit.",
+        "no_products": "Aucun produit disponible.",
         "all_products": "🛍️ <b>Tous les produits</b>\nDécouvrez les dernières offres :",
-        "btn_order": "🛒 Commander",
+        "cats_browse_title": "📂 <b>Catégories</b>\nChoisissez une catégorie pour voir les produits :",
+        "product": "📦 <b>{title}</b>\n\n{desc}\n\n💰 Prix : {price} {currency}\n🚚 Livraison : {delivery}\n🏪 Vendeur : {store}\n⭐ Note : {rating}{stock}{review}{vars}{flash}",
+        "out_of_stock_warn": "\n\n⚠️ <b>Actuellement en rupture de stock</b>",
+        "stock_left": "\n📦 Restant : {qty}",
+        "vars_list": "\n🎨 Options : {vars}",
+        "flash_sale_warn": "\n\n🔥 <b>Vente Flash !</b> Ancien prix : {old_price}, se termine dans {time}",
+        "btn_contact": "💬 Contacter le vendeur",
+        "btn_rate": "⭐ Noter la boutique",
+        "btn_order": "🛒 Commander maintenant",
         "btn_add_cart": "🛒 Ajouter au panier",
+        "btn_remove_fav": "💔 Retirer des favoris",
+        "btn_add_fav": "❤️ Ajouter aux favoris",
+        "btn_report_prod": "🚨 Signaler le produit",
+        "btn_report_store": "🚨 Signaler la boutique",
+        "btn_restock": "🔔 M'alerter dès le retour en stock",
+        "btn_similar": "🎯 Produits similaires",
+        "restock_saved": "✅ Nous vous avertirons dès que le produit sera de nouveau disponible !",
+        "restock_notify": "🔔 <b>Bonne nouvelle !</b>\n\nLe produit <b>{title}</b> que vous attendiez est de nouveau disponible chez {store}.\n💰 Prix : {price}",
+        "contact_methods_menu": "💬 <b>Contacter le vendeur</b>\nChoisissez un moyen de contact :",
+        "contact_telegram": "✈️ Telegram",
+        "contact_phone": "📞 Appel téléphonique",
+        "contact_whatsapp": "🟢 WhatsApp",
+        "contact_instagram": "📸 Instagram",
+        "contact_not_avail": "Ce moyen de contact n'est pas disponible.",
+        "fav_added": "✅ Ajouté aux favoris",
+        "fav_removed": "❌ Retiré des favoris",
+        "fav_empty": "Votre liste de favoris est vide.",
+        "my_favorites": "❤️ <b>Vos Favoris :</b>",
+        "cart_added": "✅ Ajouté au panier.",
+        "cart_empty": "Votre panier est vide.",
+        "my_cart": "🛒 <b>Votre Panier :</b>",
+        "cart_checkout": "✅ Passer la commande",
+        "cart_clear": "🗑️ Vider le panier",
+        "abandoned_cart_msg": "🛒 <b>Bonjour {name}, vous avez oublié quelque chose !</b>\n\nVous avez laissé <b>{product}</b> dans votre panier. Finalisez votre commande avant rupture de stock !",
+        "rating_prompt": "Choisissez votre note pour la boutique :",
+        "rating_comment_prompt": "Merci ! Souhaitez-vous ajouter un commentaire ?",
+        "rating_thanks": "✅ Merci ! Votre avis a bien été enregistré.",
+        "rating_invalid": "Vous avez déjà noté cette boutique.",
+        "btn_skip_comment": "⏭️ Passer le commentaire",
+        "latest_review": "\n💬 Dernier avis : <i>{comment}</i>",
+        "var_select_prompt": "🎨 Veuillez choisir l'option souhaitée :",
+        "store_welcome": "🏪 <b>Votre boutique : {name} {badge}</b>\n\n📦 Produits : {products}\n👁️ Vues : {views}\n👥 Abonnés : {followers}\n⭐ Note : {rating}",
+        "verified_badge": "✅",
+        "btn_seller_guide": "❓ Guide vendeur",
+        "seller_guide_text": "📖 <b>Guide du Vendeur</b>\n\n1️⃣ Ajoutez vos produits\n2️⃣ Partagez votre boutique\n3️⃣ Gérez vos commandes\n4️⃣ Créez des ventes flash",
+        "btn_add_product": "➕ Ajouter un produit",
+        "btn_my_products": "📦 Mes produits",
+        "btn_my_stats": "📊 Mes statistiques",
+        "btn_seller_orders": "🛒 Commandes reçues",
+        "btn_promos": "🎟️ Codes promo",
+        "btn_seller_broadcast": "📢 Message aux abonnés",
+        "btn_share": "🔗 Partager la boutique",
+        "btn_settings": "⚙️ Paramètres de la boutique",
+        "btn_flash_sale": "🔥 Créer une vente flash",
+        "store_create_prompt": "🏪 Entrez le nom de votre boutique :",
+        "store_created": "✅ Votre boutique a été créée ! Vous êtes maintenant vendeur.",
+        "share_menu": "🔗 <b>Partager votre boutique</b>\n\nChoisissez une méthode de partage :",
+        "btn_share_post": "📝 Envoyer une publication prête",
+        "btn_share_qr": "📸 Générer le QR code",
+        "btn_custom_slug": "🔗 Personnaliser le lien",
+        "btn_custom_text": "✏️ Personnaliser le texte",
+        "qr_caption": "📸 Code QR de : <b>{name}</b>\n\nScannez-le avec votre caméra pour ouvrir la boutique.",
+        "inline_share_text": "🛍️ <b>Bienvenue chez {name} !</b>\n\n{store_bio}\n\n⭐ Note : {rating}\n👥 Abonnés : {followers}\n\nAppuyez ci-dessous pour découvrir nos produits :",
+        "inline_share_btn": "🛍️ Ouvrir la boutique",
+        "enter_custom_slug": "🔗 Entrez un identifiant personnalisé (lettres, chiffres, tiret bas ; pas uniquement des chiffres).\nExemple : <code>ma_boutique_2024</code>",
+        "slug_taken": "❌ Ce nom est déjà pris, essayez-en un autre.",
+        "slug_success": "✅ Lien personnalisé ! Votre nouveau lien :\nhttps://t.me/{bot_username}?start=store_{slug}",
+        "enter_custom_share_text": "✏️ Envoyez le texte que vous souhaitez afficher avec le lien de votre boutique :",
+        "share_text_success": "✅ Texte de partage enregistré avec succès.",
+        "top_stores_title": "🏪 <b>Annuaire des Meilleures Boutiques</b>\n\nDécouvrez les boutiques les plus actives :",
+        "top_stores_empty": "Aucune boutique active pour le moment.",
+        "store_welcome_deeplink": "👋 Bienvenue chez <b>{name} {badge}</b> !\n\n{store_bio}\n\n⭐ Note : {rating}\n\nDécouvrez nos produits :",
+        "settings_menu": "⚙️ <b>Paramètres de la Boutique</b>\nChoisissez ce que vous voulez modifier :",
+        "btn_edit_name": "✏️ Modifier le nom",
+        "btn_edit_bio": "📝 Modifier la description",
+        "btn_edit_logo": "🖼️ Modifier le logo",
+        "btn_edit_contacts": "📞 Modifier les contacts",
+        "enter_new_name": "Entrez le nouveau nom de la boutique :",
+        "enter_new_bio": "Entrez la nouvelle description de la boutique :",
+        "send_logo": "Envoyez une photo pour le logo de votre boutique :",
+        "contacts_menu": "📞 <b>Moyens de Contact</b>\nChoisissez le contact à modifier :",
+        "enter_contact_tg": "Entrez votre nom d'utilisateur Telegram (ex : @utilisateur) :",
+        "enter_contact_phone": "Entrez votre numéro de téléphone (ex : +213555123456) :",
+        "enter_contact_whatsapp": "Entrez votre numéro WhatsApp (ex : +213555123456) :",
+        "enter_contact_insta": "Entrez le lien ou le compte Instagram :",
+        "settings_updated": "✅ Mis à jour avec succès !",
+        "manage_product": "⚙️ <b>Gérer le produit : {title}</b>",
+        "btn_edit_price": "💰 Modifier le prix",
+        "btn_edit_desc": "📝 Modifier la description",
+        "btn_edit_stock": "📦 Modifier le stock",
+        "btn_toggle_stock": "📦 Changer disponibilité",
+        "btn_delete_prod": "🗑️ Supprimer le produit",
+        "enter_new_price": "Entrez le nouveau prix (nombre positif > 0) :",
+        "enter_new_desc": "Entrez la nouvelle description :",
+        "enter_new_stock": "Entrez la nouvelle quantité (entier >= 0) :",
+        "prod_updated": "✅ Mis à jour.",
+        "prod_deleted": "🗑️ Produit supprimé avec succès.",
+        "stock_out": "Le produit est marqué en rupture de stock.",
+        "stock_in": "Le produit est marqué disponible.",
+        "confirm_delete": "Êtes-vous sûr de vouloir supprimer ?",
+        "btn_yes_delete": "⚠️ Oui, supprimer",
+        "my_products_list": "📦 <b>Vos produits :</b>\nAppuyez sur un produit pour le gérer :",
+        "profile_menu": "👤 <b>Votre Profil</b>\n\nNom : {name}\nTéléphone : {phone}\nAdresse : {address}\n\nMettez à jour vos infos pour commander plus vite :",
+        "btn_edit_profile_name": "✏️ Modifier le nom",
+        "btn_edit_profile_phone": "✏️ Modifier le téléphone",
+        "btn_edit_profile_address": "✏️ Modifier l'adresse",
+        "enter_p_name": "Entrez votre nom complet :",
+        "enter_p_phone": "Entrez votre numéro de téléphone :",
+        "enter_p_address": "Entrez votre adresse complète :",
+        "profile_updated": "✅ Vos informations ont été enregistrées.",
+        "buyer_orders_list": "📦 <b>Historique de vos commandes :</b>\nAppuyez sur une commande pour voir les détails :",
+        "buyer_orders_empty": "Vous n'avez aucune commande précédente.",
+        "buyer_order_details": "📋 <b>Votre commande #{id}</b>\n\n📦 Produit : {product}\n🎨 Option : {variation}\n💰 Prix : {price}\n🚚 Livraison : {delivery}\n📌 Statut : {status}\n📅 Date : {date}",
+        "order_status_notify": "🔔 <b>Mise à jour de votre commande #{id}</b>\n\nBonjour {name}, le statut de votre commande est maintenant : {status}",
+        "btn_use_saved": "✅ Utiliser mon adresse enregistrée",
+        "btn_change_status": "🔄 Changer le statut",
         "status_pending": "⏳ En attente",
         "status_shipped": "🚚 Expédiée",
-        "status_completed": "✅ Terminée",
+        "status_completed": "✅ Livrée",
         "status_cancelled": "❌ Annulée",
-        "cart_empty": "Votre panier est vide.",
-        "cart_checkout": "✅ Passer la commande",
-        "search_prompt": "🔎 Entrez un terme de recherche :",
-        "search_empty": "Aucun résultat.",
-        "cancelled": "❌ Annulé.",
+        "status_updated": "✅ Statut de la commande mis à jour.",
+        "orders_list": "🛒 <b>Vos commandes reçues :</b>\nAppuyez sur une commande pour voir les détails :",
+        "order_details": "📋 <b>Détails de la commande #{id}</b>\n\n📦 Produit : {product}\n🎨 Option : {variation}\n👤 Nom : {name}\n📞 Téléphone : {phone}\n📍 Adresse : {address}\n📝 Note : {note}\n\n💰 Prix : {price}\n🚚 Livraison : {delivery}\n📌 Statut : {status}",
+        "orders_empty": "Aucune commande pour le moment.",
+        "btn_export_orders": "📥 Exporter les commandes (CSV)",
+        "export_success": "✅ Commandes exportées avec succès !",
+        "order_name": "🛒 Veuillez entrer votre <b>nom complet</b> :",
+        "order_phone": "📞 Entrez votre <b>numéro de téléphone</b> :",
+        "order_address": "📍 Entrez votre <b>adresse</b> détaillée :",
+        "order_note": "📝 Une remarque supplémentaire ? (Envoyez ou passez) :",
+        "btn_skip_note": "⏭️ Passer la remarque",
+        "order_promo": "🎟️ Avez-vous un code promo ? Envoyez-le maintenant ou passez :",
+        "btn_skip_promo": "⏭️ Passer (sans code)",
+        "invalid_promo": "❌ Code promo invalide ou inapplicable. Réessayez ou passez :",
+        "promo_applied": "✅ Réduction appliquée ! Nouveau prix : {price}",
+        "order_success": "✅ Votre commande a été envoyée au vendeur ! Il vous contactera bientôt.",
+        "new_order_notify": "🔔 <b>Nouvelle commande reçue !</b>\n\n📦 Produit : {product}\n🎨 Option : {variation}\n👤 Nom : {name}\n📞 Téléphone : {phone}\n📍 Adresse : {address}\n📝 Note : {note}\n💰 Prix : {price}\n🚚 Livraison : {delivery}",
+        "public_store": "🏪 <b>Boutique : {name} {badge}</b>\n📝 {bio}\n⭐ Note : {rating}\n👥 Abonnés : {followers}\n\nChoisissez un produit :",
+        "btn_follow": "🔔 Suivre la boutique",
+        "btn_unfollow": "🔕 Ne plus suivre",
+        "followed": "✅ Vous suivez maintenant cette boutique.",
+        "unfollowed": "❌ Abonnement annulé.",
+        "new_prod_follower_notify": "🔔 <b>Nouveau produit !</b>\n\nLa boutique <b>{store}</b> a ajouté un produit :\n📦 {product}\n💰 {price}",
+        "store_search_prompt": "🏪 Entrez le nom de la boutique à rechercher :",
+        "store_search_results": "🏪 <b>Résultats de recherche des boutiques :</b>",
+        "store_search_empty": "Aucune boutique trouvée avec ce nom.",
+        "report_prompt": "🚨 Veuillez indiquer le motif du signalement (ex : arnaque, produit contrefait...) :",
+        "report_sent": "✅ Signalement envoyé à l'administration. Merci !",
+        "report_new_admin": "🚨 <b>Nouveau Signalement !</b>\n\nType : {type}\nMotif : {reason}\n\nLien : {link}",
+        "promo_manage": "🎟️ <b>Codes Promo</b>\nChoisissez une action :",
+        "btn_add_promo": "➕ Ajouter un code promo",
+        "btn_list_promos": "📋 Vos codes actifs",
+        "promo_add_prompt": "Entrez le code et le pourcentage de réduction (1-99) séparés par un espace.\nExemple : <code>PROMO20 20</code>",
+        "promo_added": "✅ Code promo ajouté.",
+        "promo_deleted": "🗑️ Code promo supprimé.",
+        "promos_list": "📋 <b>Codes promo :</b>\nAppuyez sur un code pour le supprimer :",
+        "add_category": "📂 Choisissez une catégorie pour votre produit :",
+        "btn_skip_category": "⏭️ Sans catégorie",
+        "add_title": "📝 Entrez le nom du produit :",
+        "add_desc": "📝 Entrez la description du produit :",
+        "add_price": "💰 Entrez le prix (nombre positif > 0) :",
+        "add_delivery_fee": "🚚 Entrez les frais de livraison (0 si gratuit) :",
+        "add_stock": "📦 Entrez la quantité en stock (entier >= 1) :",
+        "add_variations": "🎨 Entrez les options du produit (ex : Rouge,Bleu,Vert) séparées par une virgule, ou passez :",
+        "btn_skip_vars": "⏭️ Passer (sans options)",
+        "add_photo": "🖼️ Envoyez la photo <b>principale</b> du produit :",
+        "add_photo_2": "🖼️ Envoyez la <b>2e</b> photo (facultatif), ou passez :",
+        "add_photo_3": "🖼️ Envoyez la <b>3e</b> photo (facultatif), ou passez :",
+        "btn_skip_photo": "⏭️ Passer la photo",
+        "add_review": "📋 <b>Récapitulatif du Produit</b>\n\nNom : {title}\nCatégorie : {category}\nPrix : {price}\nLivraison : {delivery}\nQuantité : {stock}\nOptions : {vars}\n\nLe produit sera envoyé pour validation.",
+        "product_submitted": "✅ Produit envoyé pour validation.",
+        "product_approved_notify": "✅ Votre produit a été approuvé : {title}",
+        "product_rejected_notify": "❌ Votre produit a été refusé : {title}\nMotif : {reason}",
+        "flash_sale_menu": "🔥 <b>Ventes Flash</b>\n\nChoisissez un produit pour lancer une vente flash :",
+        "flash_sale_select_prod": "Choisissez le produit :",
+        "flash_sale_enter_price": "Entrez le prix promo (> 0 et inférieur au prix d'origine) :",
+        "flash_sale_enter_hours": "Entrez la durée de l'offre en heures (de 1 à 720) :",
+        "flash_sale_created": "✅ Vente flash activée avec succès !",
+        "flash_sale_active": "🔥 Vente flash",
+        "stats": "📊 <b>Statistiques de la Boutique</b>\n\n👁️ Vues : {views}\n📦 Produits : {products}\n🛒 Commandes : {orders}\n💵 Chiffre d'affaires : {revenue}\n⭐ Note : {rating}\n\n🏆 <b>Meilleures ventes :</b>\n{top}",
+        "top_prod_line": "• {name} ({count} commandes)\n",
+        "ads_info": "📢 <b>Publicités en Vedette</b>",
         "admin_panel": "👨‍💼 <b>Panneau d'Administration</b>",
+        "btn_pending": "⏳ Produits en attente",
+        "btn_broadcast": "📢 Diffusion générale",
+        "btn_manage_cats": "📂 Gérer les catégories",
+        "btn_global_stats": "📊 Statistiques plateforme",
+        "btn_reports": "🚨 Signalements",
+        "btn_tickets": "🎫 Tickets support",
+        "btn_manage_stores": "🏪 Gérer les boutiques",
+        "btn_verify": "✅ Certifier la boutique",
+        "btn_unverify": "❌ Retirer la certification",
+        "admin_stores_list": "🏪 <b>Liste des Boutiques :</b>\nAppuyez sur une boutique pour la gérer :",
+        "admin_store_view": "🏪 <b>Gérer la boutique : {name}</b>\n\n👤 Propriétaire : <code>{owner_id}</code>\n📦 Produits : {products}\n✅ Statut : {status}",
+        "pending_empty": "✅ Aucun produit en attente.",
+        "reject_reason": "Entrez le motif du refus :",
+        "approved": "✅ Approuvé.",
+        "rejected": "❌ Refusé.",
+        "search_prompt": "🔎 Entrez un terme de recherche :",
+        "search_empty": "Aucun résultat trouvé.",
+        "my_products_empty": "Aucun produit pour le moment.",
+        "cancelled": "❌ Annulé.",
+        "not_admin": "Accès non autorisé.",
+        "search_results": "🔎 Résultats de recherche :",
+        "share_text": "Découvrez mes produits dans ma boutique :",
+        "page_info": "Page {current} sur {total}",
+        "btn_next": "➡️ Suivant",
+        "btn_prev": "⬅️ Précédent",
+        "broadcast_prompt": "📢 Envoyez le message à diffuser à tous les utilisateurs :",
+        "broadcast_started": "⏳ Envoi en cours...",
+        "broadcast_done": "✅ Diffusion terminée auprès de {count} utilisateurs.",
+        "seller_broadcast_prompt": "📢 Envoyez le message à diffuser aux abonnés de votre boutique :",
+        "seller_broadcast_done": "✅ Message envoyé à {count} abonnés.",
+        "cats_manage": "📂 <b>Gestion des Catégories</b>",
+        "btn_add_cat": "➕ Ajouter une catégorie",
+        "cat_add_prompt": "Entrez les noms de la catégorie (Arabe, Anglais, Français) séparés par une virgule :\nExemple : <code>سيارات,Cars,Voitures</code>",
+        "cat_added": "✅ Catégorie ajoutée.",
         "cat_deleted": "🗑️ Catégorie supprimée. (Les produits ne sont plus catégorisés)",
+        "cat_del_confirm": "Êtes-vous sûr de vouloir supprimer cette catégorie ?",
+        "global_stats": "📊 <b>Statistiques de la Plateforme</b>\n\n👥 Utilisateurs : {users}\n🏪 Boutiques : {stores}\n📦 Produits : {products}\n🛒 Commandes : {orders}",
+        "reports_list": "🚨 <b>Signalements en attente :</b>",
+        "reports_empty": "✅ Aucun signalement en attente.",
+        "report_resolved": "✅ Signalement résolu.",
+        "support_msg": "🆘 <b>Support Technique</b>\n\nVous pouvez envoyer votre question ou problème à l'administration, et vous recevrez une réponse ici dans le bot.",
+        "btn_new_ticket": "📝 Ouvrir un ticket",
+        "btn_my_tickets": "📋 Mes tickets",
+        "ticket_subject": "Entrez un bref sujet pour votre demande :",
+        "ticket_body": "Décrivez maintenant votre problème en détail (texte ou photo) :",
+        "ticket_created": "✅ Ticket #{id} créé. Nous vous répondrons rapidement.",
+        "ticket_reply_from_admin": "💬 <b>Réponse du support sur votre ticket #{id} :</b>\n\n{text}",
+        "tickets_empty": "Vous n'avez aucun ticket.",
+        "ticket_status_open": "🟢 Ouvert",
+        "ticket_status_closed": "🔴 Fermé",
+        "btn_reply_ticket": "↩️ Répondre",
+        "btn_close_ticket": "🔒 Fermer le ticket",
+        "ticket_closed": "🔒 Ticket fermé.",
+        "ticket_reply_prompt": "Entrez votre réponse au ticket :",
+        "btn_vip_pkg": "👑 Forfait VIP",
+        "btn_wallet": "💳 Mon Portefeuille",
+        "btn_admin_channel": "📢 Canal Auto-Post",
+        "btn_admin_backup": "💾 Sauvegarde BDD",
+        "analytics_period_7": "📅 7 derniers jours",
+        "analytics_period_30": "🗓️ 30 derniers jours",
+        "analytics_period_0": "♾️ Tout le temps",
+        "analytics_export_csv": "📥 Exporter les analyses (CSV)",
+        "analytics_refresh": "🔄 Actualiser",
+        "analytics_store_title": "📊 <b>Analyses et Rapports de la Boutique</b>",
+        "analytics_platform_title": "📊 <b>Analyses et Rapports de la Plateforme</b>",
+        "analytics_period_lbl": "⏱️ Période",
+        "analytics_overview": "📌 <b>Résumé des Performances :</b>",
+        "analytics_orders_breakdown": "📦 <b>Répartition des Commandes :</b>",
+        "analytics_daily_trend": "📈 <b>Tendance des Ventes :</b>",
+        "analytics_top_wilayas": "🗺️ <b>Top Wilayas Commandées :</b>",
+        "analytics_delivery_split": "🚚 <b>Modes de Livraison :</b>",
+        "analytics_top_products": "🏆 <b>Meilleurs Produits (CA) :</b>",
+        "analytics_top_stores": "🏪 <b>Meilleures Boutiques (CA) :</b>",
+        "analytics_no_data": "Aucune donnée disponible pour cette période.",
+        "analytics_home_lbl": "🏠 À domicile",
+        "analytics_desk_lbl": "🏢 Stop Desk",
+        "analytics_csv_caption": "📊 <b>Rapport d'Analyses Complet ({period})</b>\n📅 {date} UTC",
     },
 }
 
@@ -1728,7 +2083,7 @@ def build_wilaya_kb(page: int, prefix: str, select_prefix: str, back_cb: str, la
         for code in chunk[i : i + 2]:
             row.append(
                 InlineKeyboardButton(
-                    text=f"{code} - {ALGERIA_WILAYAS[code]}",
+                    text=wilaya_label(code, lang),
                     callback_data=f"{select_prefix}:{code}",
                 )
             )
@@ -1830,6 +2185,415 @@ async def publish_product_to_channel(bot: Bot, product_id: int) -> bool:
         return False
 
 
+def _analytics_bar(value: float, max_val: float, width: int = 8) -> str:
+    if max_val <= 0 or value <= 0:
+        return "░" * width
+    filled = max(1, min(width, int(round((value / max_val) * width))))
+    return "█" * filled + "░" * (width - filled)
+
+
+def _analytics_period_name(days: int, lang: str) -> str:
+    if days == 7:
+        return t(lang, "analytics_period_7")
+    if days == 30:
+        return t(lang, "analytics_period_30")
+    return t(lang, "analytics_period_0")
+
+
+def _analytics_kb(scope_prefix: str, csv_prefix: str, days: int, back_cb: str, lang: str) -> InlineKeyboardMarkup:
+    def _mark(d: int, key: str) -> str:
+        lbl = t(lang, key)
+        return f"• {lbl} •" if days == d else lbl
+
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=_mark(7, "analytics_period_7"), callback_data=f"{scope_prefix}:7"),
+            InlineKeyboardButton(text=_mark(30, "analytics_period_30"), callback_data=f"{scope_prefix}:30"),
+            InlineKeyboardButton(text=_mark(0, "analytics_period_0"), callback_data=f"{scope_prefix}:0"),
+        ],
+        [
+            InlineKeyboardButton(text=t(lang, "analytics_export_csv"), callback_data=f"{csv_prefix}:{days}"),
+            InlineKeyboardButton(text=t(lang, "analytics_refresh"), callback_data=f"{scope_prefix}:{days}"),
+        ],
+        [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=back_cb)],
+    ])
+
+
+async def _fetch_analytics_orders(s, store_id: Optional[int], since: Optional[datetime], until: Optional[datetime] = None):
+    stmt = (
+        select(
+            Order.id,
+            Order.store_id,
+            Order.product_id,
+            Order.product_title,
+            Order.quantity,
+            Order.price,
+            Order.delivery_fee,
+            Order.status,
+            Order.buyer_wilaya,
+            Order.delivery_type,
+            Order.created_at,
+            Product.title.label("prod_title_live"),
+            Product.store_id.label("prod_store_id"),
+        )
+        .outerjoin(Product, Order.product_id == Product.id)
+    )
+    if store_id is not None:
+        stmt = stmt.where(or_(Order.store_id == store_id, Product.store_id == store_id))
+    if since is not None:
+        stmt = stmt.where(Order.created_at >= since)
+    if until is not None:
+        stmt = stmt.where(Order.created_at < until)
+    return (await s.execute(stmt)).all()
+
+
+async def _build_analytics_report(s, store_id: Optional[int], days: int, lang: str) -> str:
+    """Build rich HTML analytics report for either a single store or the whole platform."""
+    now = utcnow()
+    since = now - timedelta(days=days) if days in (7, 30) else None
+    rows = await _fetch_analytics_orders(s, store_id, since)
+
+    prev_rev: Optional[float] = None
+    if days in (7, 30):
+        prev_since = now - timedelta(days=days * 2)
+        prev_rows = await _fetch_analytics_orders(s, store_id, prev_since, since)
+        prev_rev = sum(float(r.price or 0.0) for r in prev_rows if r.status != "cancelled")
+
+    total_orders = len(rows)
+    completed = sum(1 for r in rows if r.status == "completed")
+    shipped = sum(1 for r in rows if r.status == "shipped")
+    pending = sum(1 for r in rows if r.status == "pending")
+    cancelled = sum(1 for r in rows if r.status == "cancelled")
+    active_rows = [r for r in rows if r.status != "cancelled"]
+    units_sold = sum(max(1, int(r.quantity or 1)) for r in active_rows)
+    gross_rev = sum(float(r.price or 0.0) for r in active_rows)
+    delivery_total = sum(float(r.delivery_fee or 0.0) for r in active_rows)
+    net_prod_rev = max(0.0, gross_rev - delivery_total)
+    aov = (gross_rev / len(active_rows)) if active_rows else 0.0
+
+    success_rate = ((total_orders - cancelled) / total_orders * 100.0) if total_orders else 0.0
+    cancel_rate = (cancelled / total_orders * 100.0) if total_orders else 0.0
+    closed = completed + cancelled
+    completion_rate = (completed / closed * 100.0) if closed else 0.0
+
+    trend_badge = ""
+    if prev_rev is not None:
+        if prev_rev > 0:
+            delta_pct = ((gross_rev - prev_rev) / prev_rev) * 100.0
+            arrow = "📈" if delta_pct > 0 else ("📉" if delta_pct < 0 else "➖")
+            trend_badge = f" ({arrow} {delta_pct:+.1f}%)"
+        elif gross_rev > 0:
+            trend_badge = " (📈 +100%)"
+
+    # Delivery split
+    home_cnt = sum(1 for r in active_rows if (r.delivery_type or "home") != "desk")
+    desk_cnt = sum(1 for r in active_rows if (r.delivery_type or "home") == "desk")
+    deliv_total_cnt = home_cnt + desk_cnt
+    home_pct = (home_cnt / deliv_total_cnt * 100.0) if deliv_total_cnt else 0.0
+    desk_pct = (desk_cnt / deliv_total_cnt * 100.0) if deliv_total_cnt else 0.0
+
+    # Top 5 Wilayas
+    wilaya_stats: dict[str, list[float]] = {}
+    for r in active_rows:
+        w = (r.buyer_wilaya or "").strip()
+        if not w:
+            w = "00"
+        elif w.isdigit():
+            w = w.zfill(2)
+        entry = wilaya_stats.setdefault(w, [0.0, 0.0])
+        entry[0] += 1.0
+        entry[1] += float(r.price or 0.0)
+    top_wilayas = sorted(wilaya_stats.items(), key=lambda kv: (kv[1][0], kv[1][1]), reverse=True)[:5]
+
+    # Top 5 Products by revenue & count
+    prod_stats: dict[str, list[float]] = {}
+    for r in active_rows:
+        pname = (r.prod_title_live or r.product_title or f"#{r.product_id or '?'}").strip()
+        entry = prod_stats.setdefault(pname, [0.0, 0.0, 0.0])  # [orders, units, revenue]
+        entry[0] += 1.0
+        entry[1] += max(1, int(r.quantity or 1))
+        entry[2] += float(r.price or 0.0)
+    top_prods = sorted(prod_stats.items(), key=lambda kv: (kv[1][2], kv[1][0]), reverse=True)[:5]
+
+    # Daily / Period Sales Trend (last 7 days or 4 weekly buckets for 30d)
+    trend_lines: list[str] = []
+    if days == 7 or (days == 0 and total_orders > 0):
+        bucket_days = 7
+        day_buckets: list[tuple[str, int, float]] = []
+        for offset in range(bucket_days - 1, -1, -1):
+            d_dt = (now - timedelta(days=offset)).date()
+            cnt = 0
+            rev = 0.0
+            for r in active_rows:
+                if r.created_at and r.created_at.date() == d_dt:
+                    cnt += 1
+                    rev += float(r.price or 0.0)
+            day_buckets.append((d_dt.strftime("%m/%d"), cnt, rev))
+        max_rev_b = max((b[2] for b in day_buckets), default=0.0)
+        for lbl, cnt, rev in day_buckets:
+            bar = _analytics_bar(rev, max_rev_b, 8)
+            trend_lines.append(f"<code>{lbl}</code> {bar} {cnt} | {rev:,.0f} {DEFAULT_CURRENCY}")
+    elif days == 30:
+        week_buckets: list[tuple[str, int, float]] = []
+        for w_idx in range(3, -1, -1):
+            w_end = now - timedelta(days=w_idx * 7)
+            w_start = w_end - timedelta(days=7)
+            cnt = 0
+            rev = 0.0
+            for r in active_rows:
+                if r.created_at and w_start <= r.created_at < w_end:
+                    cnt += 1
+                    rev += float(r.price or 0.0)
+            lbl = f"{w_start.strftime('%d/%m')}-{w_end.strftime('%d/%m')}"
+            week_buckets.append((lbl, cnt, rev))
+        max_rev_b = max((b[2] for b in week_buckets), default=0.0)
+        for lbl, cnt, rev in week_buckets:
+            bar = _analytics_bar(rev, max_rev_b, 8)
+            trend_lines.append(f"<code>{lbl}</code> {bar} {cnt} | {rev:,.0f} {DEFAULT_CURRENCY}")
+
+    # Localized labels
+    if lang == "fr":
+        lbl_rev = "Chiffre d'affaires"
+        lbl_net = "Revenu net produits"
+        lbl_deliv = "Frais livraison"
+        lbl_aov = "Panier moyen"
+        lbl_orders = "Total commandes"
+        lbl_units = "Unités vendues"
+        lbl_conv = "Taux de conversion"
+        lbl_success = "Taux de maintien"
+        lbl_done_rate = "Taux de livraison"
+        lbl_cancel = "Taux d'annulation"
+        lbl_views = "Vues produits"
+        lbl_followers = "Abonnés"
+        lbl_users = "Utilisateurs"
+        lbl_stores = "Boutiques"
+        lbl_prods = "Produits actifs"
+        lbl_new = "nouveaux"
+        lbl_unknown_w = "Non précisée"
+        lbl_ord_short = "cmd"
+    elif lang == "en":
+        lbl_rev = "Gross Revenue"
+        lbl_net = "Net Product Sales"
+        lbl_deliv = "Delivery Fees"
+        lbl_aov = "Avg Order Value"
+        lbl_orders = "Total Orders"
+        lbl_units = "Units Sold"
+        lbl_conv = "Conversion Rate"
+        lbl_success = "Retention Rate"
+        lbl_done_rate = "Completion Rate"
+        lbl_cancel = "Cancel Rate"
+        lbl_views = "Product Views"
+        lbl_followers = "Followers"
+        lbl_users = "Users"
+        lbl_stores = "Stores"
+        lbl_prods = "Active Products"
+        lbl_new = "new"
+        lbl_unknown_w = "Unspecified"
+        lbl_ord_short = "ord"
+    else:
+        lbl_rev = "إجمالي المبيعات"
+        lbl_net = "صافي مبيعات المنتجات"
+        lbl_deliv = "رسوم التوصيل"
+        lbl_aov = "متوسط قيمة الطلب"
+        lbl_orders = "إجمالي الطلبات"
+        lbl_units = "القطع المباعة"
+        lbl_conv = "معدل التحويل"
+        lbl_success = "نسبة النجاح"
+        lbl_done_rate = "نسبة التسليم"
+        lbl_cancel = "نسبة الإلغاء"
+        lbl_views = "المشاهدات"
+        lbl_followers = "المتابعون"
+        lbl_users = "المستخدمون"
+        lbl_stores = "المتاجر"
+        lbl_prods = "المنتجات النشطة"
+        lbl_new = "جديد"
+        lbl_unknown_w = "غير محددة"
+        lbl_ord_short = "طلب"
+
+    lines: list[str] = []
+    if store_id is not None:
+        store = await s.get(Store, store_id)
+        sname = esc(store.name) if store else f"#{store_id}"
+        pcount = (await s.execute(select(func.count(Product.id)).where(Product.store_id == store_id, Product.is_deleted.is_(False)))).scalar() or 0
+        vcount = (await s.execute(select(func.coalesce(func.sum(Product.views), 0)).where(Product.store_id == store_id, Product.is_deleted.is_(False)))).scalar() or 0
+        fcount = (await s.execute(select(func.count(StoreFollower.id)).where(StoreFollower.store_id == store_id))).scalar() or 0
+        rating = await get_store_rating(store_id, s)
+        conv_rate = (total_orders / vcount * 100.0) if vcount > 0 else 0.0
+
+        lines.append(f"{t(lang, 'analytics_store_title')} — <b>{sname}</b>")
+        lines.append(f"{t(lang, 'analytics_period_lbl')}: <b>{_analytics_period_name(days, lang)}</b>\n")
+        lines.append(t(lang, "analytics_overview"))
+        lines.append(f"• 💰 {lbl_rev}: <b>{gross_rev:,.0f} {DEFAULT_CURRENCY}</b>{trend_badge}")
+        lines.append(f"• 🏷️ {lbl_net}: <b>{net_prod_rev:,.0f} {DEFAULT_CURRENCY}</b> | 🚚 {lbl_deliv}: {delivery_total:,.0f} {DEFAULT_CURRENCY}")
+        lines.append(f"• 🧾 {lbl_aov}: <b>{aov:,.0f} {DEFAULT_CURRENCY}</b> | 📦 {lbl_units}: <b>{units_sold}</b>")
+        lines.append(f"• 👁️ {lbl_views}: <b>{vcount}</b> | 🎯 {lbl_conv}: <b>{conv_rate:.1f}%</b>")
+        lines.append(f"• 📦 {lbl_prods}: <b>{pcount}</b> | 👥 {lbl_followers}: <b>{fcount}</b> | ⭐ {rating}")
+    else:
+        total_users = (await s.execute(select(func.count(User.id)))).scalar() or 0
+        new_users = (
+            (await s.execute(select(func.count(User.id)).where(User.created_at >= since))).scalar() or 0
+            if since is not None
+            else total_users
+        )
+        total_stores = (await s.execute(select(func.count(Store.id)))).scalar() or 0
+        vip_stores = (await s.execute(select(func.count(Store.id)).where(Store.vip_until.is_not(None), Store.vip_until > now))).scalar() or 0
+        total_prods = (await s.execute(select(func.count(Product.id)).where(Product.is_deleted.is_(False)))).scalar() or 0
+
+        lines.append(t(lang, "analytics_platform_title"))
+        lines.append(f"{t(lang, 'analytics_period_lbl')}: <b>{_analytics_period_name(days, lang)}</b>\n")
+        lines.append(t(lang, "analytics_overview"))
+        user_extra = f" (+{new_users} {lbl_new})" if since is not None else ""
+        lines.append(f"• 👥 {lbl_users}: <b>{total_users}</b>{user_extra} | 🏪 {lbl_stores}: <b>{total_stores}</b> (👑 {vip_stores} VIP)")
+        lines.append(f"• 📦 {lbl_prods}: <b>{total_prods}</b> | 🛒 {lbl_orders}: <b>{total_orders}</b>")
+        lines.append(f"• 💰 {lbl_rev}: <b>{gross_rev:,.0f} {DEFAULT_CURRENCY}</b>{trend_badge}")
+        lines.append(f"• 🏷️ {lbl_net}: <b>{net_prod_rev:,.0f} {DEFAULT_CURRENCY}</b> | 🧾 {lbl_aov}: <b>{aov:,.0f} {DEFAULT_CURRENCY}</b>")
+
+    # Orders Breakdown & Rates
+    lines.append(f"\n{t(lang, 'analytics_orders_breakdown')}")
+    lines.append(
+        f"• {t(lang, 'status_completed')}: <b>{completed}</b> | "
+        f"{t(lang, 'status_shipped')}: <b>{shipped}</b> | "
+        f"{t(lang, 'status_pending')}: <b>{pending}</b> | "
+        f"{t(lang, 'status_cancelled')}: <b>{cancelled}</b>"
+    )
+    lines.append(
+        f"• ✅ {lbl_success}: <b>{success_rate:.1f}%</b> | "
+        f"📦 {lbl_done_rate}: <b>{completion_rate:.1f}%</b> | "
+        f"❌ {lbl_cancel}: <b>{cancel_rate:.1f}%</b>"
+    )
+
+    # Delivery Split
+    if deliv_total_cnt > 0:
+        lines.append(f"\n{t(lang, 'analytics_delivery_split')}")
+        lines.append(
+            f"• {t(lang, 'analytics_home_lbl')}: <b>{home_cnt}</b> ({home_pct:.0f}%) | "
+            f"{t(lang, 'analytics_desk_lbl')}: <b>{desk_cnt}</b> ({desk_pct:.0f}%)"
+        )
+
+    # Daily / Weekly Trend
+    if trend_lines and total_orders > 0:
+        lines.append(f"\n{t(lang, 'analytics_daily_trend')}")
+        lines.extend(trend_lines)
+
+    # Top 5 Wilayas
+    lines.append(f"\n{t(lang, 'analytics_top_wilayas')}")
+    if top_wilayas:
+        max_w_cnt = top_wilayas[0][1][0]
+        for idx, (wcode, (wcnt, wrev)) in enumerate(top_wilayas, start=1):
+            wname = lbl_unknown_w if wcode == "00" else wilaya_label(wcode, lang)
+            share = (wcnt / len(active_rows) * 100.0) if active_rows else 0.0
+            bar = _analytics_bar(wcnt, max_w_cnt, 6)
+            lines.append(
+                f"{idx}. <b>{esc(wname)}</b> {bar} {int(wcnt)} {lbl_ord_short} ({share:.0f}%) — {wrev:,.0f} {DEFAULT_CURRENCY}"
+            )
+    else:
+        lines.append(f"• {t(lang, 'analytics_no_data')}")
+
+    # Top 5 Stores (Admin only)
+    if store_id is None:
+        store_stats: dict[int, list[float]] = {}
+        for r in active_rows:
+            st_id = r.store_id or r.prod_store_id
+            if st_id:
+                entry = store_stats.setdefault(int(st_id), [0.0, 0.0])
+                entry[0] += 1.0
+                entry[1] += float(r.price or 0.0)
+        top_st_ids = sorted(store_stats.items(), key=lambda kv: (kv[1][1], kv[1][0]), reverse=True)[:5]
+        lines.append(f"\n{t(lang, 'analytics_top_stores')}")
+        if top_st_ids:
+            st_objs = (
+                await s.execute(select(Store).where(Store.id.in_([sid for sid, _ in top_st_ids])))
+            ).scalars().all()
+            st_map = {st.id: st.name for st in st_objs}
+            for idx, (sid_k, (scnt, srev)) in enumerate(top_st_ids, start=1):
+                lines.append(
+                    f"{idx}. <b>{esc(st_map.get(sid_k, f'#{sid_k}'))}</b> — {int(scnt)} {lbl_ord_short} ({srev:,.0f} {DEFAULT_CURRENCY})"
+                )
+        else:
+            lines.append(f"• {t(lang, 'analytics_no_data')}")
+
+    # Top 5 Products
+    lines.append(f"\n{t(lang, 'analytics_top_products')}")
+    if top_prods:
+        for idx, (pname, (ocnt, ucnt, prev)) in enumerate(top_prods, start=1):
+            lines.append(
+                f"{idx}. <b>{esc(pname[:38])}</b> — {int(ocnt)} {lbl_ord_short} (×{int(ucnt)}) | {prev:,.0f} {DEFAULT_CURRENCY}"
+            )
+    else:
+        lines.append(f"• {t(lang, 'analytics_no_data')}")
+
+    report = "\n".join(lines)
+    if len(report) > 4000:
+        report = report[:3980] + "\n…"
+    return report
+
+
+async def _build_analytics_csv(s, store_id: Optional[int], days: int, lang: str) -> bytes:
+    """Generate UTF-8-BOM CSV analytics report (summary + wilayas + products + daily)."""
+    now = utcnow()
+    since = now - timedelta(days=days) if days in (7, 30) else None
+    rows = await _fetch_analytics_orders(s, store_id, since)
+    active_rows = [r for r in rows if r.status != "cancelled"]
+
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["SECTION", "METRIC / NAME", "ORDERS", "UNITS", "REVENUE_DZD", "SHARE_PCT"])
+
+    total_orders = len(rows)
+    completed = sum(1 for r in rows if r.status == "completed")
+    cancelled = sum(1 for r in rows if r.status == "cancelled")
+    gross_rev = sum(float(r.price or 0.0) for r in active_rows)
+    deliv_rev = sum(float(r.delivery_fee or 0.0) for r in active_rows)
+    units_total = sum(max(1, int(r.quantity or 1)) for r in active_rows)
+    w.writerow(["SUMMARY", "Total Orders", total_orders, units_total, f"{gross_rev:.2f}", "100%"])
+    w.writerow(["SUMMARY", "Completed Orders", completed, "", "", f"{(completed / total_orders * 100):.1f}%" if total_orders else "0%"])
+    w.writerow(["SUMMARY", "Cancelled Orders", cancelled, "", "", f"{(cancelled / total_orders * 100):.1f}%" if total_orders else "0%"])
+    w.writerow(["SUMMARY", "Delivery Fees Total", len(active_rows), "", f"{deliv_rev:.2f}", ""])
+    w.writerow([])
+
+    # By Wilaya
+    wilaya_map: dict[str, list[float]] = {}
+    for r in active_rows:
+        wc = (r.buyer_wilaya or "").strip()
+        wc = wc.zfill(2) if wc.isdigit() else (wc or "00")
+        e = wilaya_map.setdefault(wc, [0.0, 0.0, 0.0])
+        e[0] += 1.0
+        e[1] += max(1, int(r.quantity or 1))
+        e[2] += float(r.price or 0.0)
+    for wc, (cnt, ucnt, rev) in sorted(wilaya_map.items(), key=lambda kv: kv[1][0], reverse=True):
+        wname = "-" if wc == "00" else wilaya_label(wc, lang)
+        pct = f"{(cnt / len(active_rows) * 100):.1f}%" if active_rows else "0%"
+        w.writerow(["WILAYA", csv_safe(wname), int(cnt), int(ucnt), f"{rev:.2f}", pct])
+    w.writerow([])
+
+    # By Product
+    prod_map: dict[str, list[float]] = {}
+    for r in active_rows:
+        pname = (r.prod_title_live or r.product_title or f"#{r.product_id or '?'}").strip()
+        e = prod_map.setdefault(pname, [0.0, 0.0, 0.0])
+        e[0] += 1.0
+        e[1] += max(1, int(r.quantity or 1))
+        e[2] += float(r.price or 0.0)
+    for pname, (cnt, ucnt, rev) in sorted(prod_map.items(), key=lambda kv: kv[1][2], reverse=True)[:50]:
+        pct = f"{(rev / gross_rev * 100):.1f}%" if gross_rev > 0 else "0%"
+        w.writerow(["PRODUCT", csv_safe(pname), int(cnt), int(ucnt), f"{rev:.2f}", pct])
+    w.writerow([])
+
+    # By Day
+    day_map: dict[str, list[float]] = {}
+    for r in active_rows:
+        dkey = r.created_at.strftime("%Y-%m-%d") if r.created_at else "unknown"
+        e = day_map.setdefault(dkey, [0.0, 0.0, 0.0])
+        e[0] += 1.0
+        e[1] += max(1, int(r.quantity or 1))
+        e[2] += float(r.price or 0.0)
+    for dkey in sorted(day_map.keys(), reverse=True):
+        cnt, ucnt, rev = day_map[dkey]
+        w.writerow(["DAILY", dkey, int(cnt), int(ucnt), f"{rev:.2f}", ""])
+
+    return buf.getvalue().encode("utf-8-sig")
+
+
 def build_pagination_kb(items, page: int, prefix: str, lang: str, extra_buttons=None) -> InlineKeyboardMarkup:
     extra_buttons = extra_buttons or []
     total_pages = max(1, math.ceil(len(items) / ITEMS_PER_PAGE))
@@ -1912,7 +2676,7 @@ def _buyer_menu_kb(lang: str) -> InlineKeyboardMarkup:
 def _account_menu_kb(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=t(lang, "btn_profile"), callback_data="nav:profile"),
-         InlineKeyboardButton(text="💳 محفظتي (الرصيد)", callback_data="nav:wallet")],
+         InlineKeyboardButton(text=t(lang, "btn_wallet"), callback_data="nav:wallet")],
         [InlineKeyboardButton(text=t(lang, "btn_my_orders"), callback_data="nav:orders"),
          InlineKeyboardButton(text=t(lang, "btn_favorites"), callback_data="nav:favs")],
         [InlineKeyboardButton(text=t(lang, "btn_support"), callback_data="nav:support"),
@@ -2021,8 +2785,8 @@ async def send_store_dashboard(msg_obj, store_id: int, lang: str):
         [InlineKeyboardButton(text=t(lang, "btn_flash_sale"), callback_data=f"st_flash:{store.id}"),
          InlineKeyboardButton(text=t(lang, "btn_promos"), callback_data=f"st_promos:{store.id}")],
         [InlineKeyboardButton(text=t(lang, "btn_buy_product_ad"), callback_data=f"st_buy_ad:{store.id}"),
-         InlineKeyboardButton(text="👑 باقة VIP", callback_data=f"st_vip:{store.id}")],
-        [InlineKeyboardButton(text=f"💳 محفظتي ({credits:g} دج)", callback_data=f"st_wallet:{store.id}"),
+         InlineKeyboardButton(text=t(lang, "btn_vip_pkg"), callback_data=f"st_vip:{store.id}")],
+        [InlineKeyboardButton(text=f"{t(lang, 'btn_wallet')} ({credits:g} {DEFAULT_CURRENCY})", callback_data=f"st_wallet:{store.id}"),
          InlineKeyboardButton(text=t(lang, "btn_my_stats"), callback_data=f"st_stats:{store.id}")],
         [InlineKeyboardButton(text=t(lang, "btn_share"), callback_data=f"st_share:{store.id}"),
          InlineKeyboardButton(text=t(lang, "btn_seller_broadcast"), callback_data=f"st_broadcast:{store.id}")],
@@ -2032,7 +2796,7 @@ async def send_store_dashboard(msg_obj, store_id: int, lang: str):
     if total_stores < max_allowed:
         kb.append([InlineKeyboardButton(text=t(lang, "add_new_store"), callback_data="nav:become_seller")])
     else:
-        kb.append([InlineKeyboardButton(text=f"⚠️ الحد الأقصى ({max_allowed} متاجر)", callback_data="ignore")])
+        kb.append([InlineKeyboardButton(text=f"⚠️ ({max_allowed})", callback_data="ignore")])
     kb.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="menu:home")])
     await msg_obj.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
@@ -2053,8 +2817,8 @@ async def _build_admin_panel_kb(lang: str) -> InlineKeyboardMarkup:
          InlineKeyboardButton(text=t(lang, "btn_global_stats"), callback_data="admin:gstats")],
         [InlineKeyboardButton(text=f"{t(lang, 'btn_manage_bot_ads')} ({bads})", callback_data="admin:botads"),
          InlineKeyboardButton(text=f"{t(lang, 'btn_manage_ad_requests')} ({adreqs})", callback_data="admin:adreqs")],
-        [InlineKeyboardButton(text="📢 قناة النشر التلقائي", callback_data="admin:channel"),
-         InlineKeyboardButton(text="💾 نسخ احتياطي", callback_data="admin:backup")],
+        [InlineKeyboardButton(text=t(lang, "btn_admin_channel"), callback_data="admin:channel"),
+         InlineKeyboardButton(text=t(lang, "btn_admin_backup"), callback_data="admin:backup")],
         [InlineKeyboardButton(text=t(lang, "btn_broadcast"), callback_data="admin:broadcast")],
         [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="menu:home")],
     ])
@@ -5909,41 +6673,45 @@ async def seller_broadcast_send(message: Message, state: FSMContext):
 
 @seller_router.callback_query(F.data.startswith("st_stats:"))
 async def store_stats(cb: CallbackQuery):
-    sid = int(cb.data.split(":")[1])
+    parts = cb.data.split(":")
+    sid = int(parts[1])
+    days = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 30
+    if days not in (0, 7, 30):
+        days = 30
     if not await is_store_owner(cb.from_user.id, sid):
         return await cb.answer("⛔ غير مصرح.", show_alert=True)
     lang = await get_lang(cb.from_user.id)
     async with Session() as s:
-        pcount = (await s.execute(select(func.count(Product.id)).where(Product.store_id == sid, Product.is_deleted.is_(False)))).scalar()
-        vcount = (await s.execute(select(func.coalesce(func.sum(Product.views), 0)).where(Product.store_id == sid, Product.is_deleted.is_(False)))).scalar()
-        ocount = (
-            await s.execute(
-                select(func.count(Order.id))
-                .outerjoin(Product, Order.product_id == Product.id)
-                .where(or_(Order.store_id == sid, Product.store_id == sid))
-            )
-        ).scalar()
-        revenue = (
-            await s.execute(
-                select(func.coalesce(func.sum(Order.price), 0))
-                .outerjoin(Product, Order.product_id == Product.id)
-                .where(or_(Order.store_id == sid, Product.store_id == sid), Order.status != "cancelled")
-            )
-        ).scalar()
-        rating = await get_store_rating(sid, s)
-        top_results = (
-            await s.execute(
-                select(Product.title, func.count(Order.id))
-                .join(Order, Order.product_id == Product.id)
-                .where(Product.store_id == sid, Order.status != "cancelled")
-                .group_by(Product.id)
-                .order_by(desc(func.count(Order.id)))
-                .limit(5)
-            )
-        ).all()
-    top_text = "".join(t(lang, "top_prod_line", name=esc(name), count=count) for name, count in top_results) or "لا توجد مبيعات بعد."
-    text = t(lang, "stats", views=vcount, products=pcount, orders=ocount, revenue=f"{revenue:.2f}", rating=rating, top=top_text)
-    await cb.message.answer(text)
+        text = await _build_analytics_report(s, sid, days, lang)
+    kb = _analytics_kb(f"st_stats:{sid}", f"st_stats_csv:{sid}", days, f"mngstore:{sid}", lang)
+    try:
+        await cb.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb)
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("st_stats_csv:"))
+async def store_stats_csv(cb: CallbackQuery):
+    parts = cb.data.split(":")
+    sid = int(parts[1])
+    days = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 30
+    if days not in (0, 7, 30):
+        days = 30
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    lang = await get_lang(cb.from_user.id)
+    async with Session() as s:
+        csv_bytes = await _build_analytics_csv(s, sid, days, lang)
+    period_tag = f"{days}d" if days else "all"
+    fname = f"store_{sid}_analytics_{period_tag}_{utcnow().strftime('%Y%m%d')}.csv"
+    caption = t(
+        lang,
+        "analytics_csv_caption",
+        period=_analytics_period_name(days, lang),
+        date=utcnow().strftime("%Y-%m-%d %H:%M"),
+    )
+    await cb.message.answer_document(BufferedInputFile(csv_bytes, filename=fname), caption=caption)
     await cb.answer()
 
 
@@ -6757,22 +7525,45 @@ async def admin_cat_del_yes(cb: CallbackQuery):
     await admin_cats(cb)
 
 
-@seller_router.callback_query(F.data == "admin:gstats")
+@seller_router.callback_query((F.data == "admin:gstats") | F.data.startswith("admin:gstats:"))
 async def admin_gstats(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS:
         return await cb.answer("غير مصرح", show_alert=True)
+    parts = cb.data.split(":")
+    days = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 30
+    if days not in (0, 7, 30):
+        days = 30
     lang = await get_lang(cb.from_user.id)
     async with Session() as s:
-        users = (await s.execute(select(func.count(User.id)))).scalar()
-        stores = (await s.execute(select(func.count(Store.id)))).scalar()
-        products = (await s.execute(select(func.count(Product.id)).where(Product.is_deleted.is_(False)))).scalar()
-        orders = (await s.execute(select(func.count(Order.id)))).scalar()
-    text = t(lang, "global_stats", users=users, stores=stores, products=products, orders=orders)
-    kb = back_kb(lang, "menu:admin")
+        text = await _build_analytics_report(s, None, days, lang)
+    kb = _analytics_kb("admin:gstats", "admin:gstats_csv", days, "menu:admin", lang)
     try:
         await cb.message.edit_text(text, reply_markup=kb)
     except Exception:
         await cb.message.answer(text, reply_markup=kb)
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("admin:gstats_csv:"))
+async def admin_gstats_csv(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    parts = cb.data.split(":")
+    days = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 30
+    if days not in (0, 7, 30):
+        days = 30
+    lang = await get_lang(cb.from_user.id)
+    async with Session() as s:
+        csv_bytes = await _build_analytics_csv(s, None, days, lang)
+    period_tag = f"{days}d" if days else "all"
+    fname = f"platform_analytics_{period_tag}_{utcnow().strftime('%Y%m%d')}.csv"
+    caption = t(
+        lang,
+        "analytics_csv_caption",
+        period=_analytics_period_name(days, lang),
+        date=utcnow().strftime("%Y-%m-%d %H:%M"),
+    )
+    await cb.message.answer_document(BufferedInputFile(csv_bytes, filename=fname), caption=caption)
     await cb.answer()
 
 
