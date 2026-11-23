@@ -22,10 +22,10 @@ import tempfile
 import time
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
-from typing import Any, Final, Optional
+from typing import Any, Awaitable, Callable, Final, Optional
 
 import qrcode
-from aiogram import Bot, Dispatcher, F, Router
+from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
@@ -46,6 +46,7 @@ from aiogram.types import (
     Message,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
+    TelegramObject,
 )
 from sqlalchemy import (
     BigInteger,
@@ -560,6 +561,28 @@ TEXTS: dict[str, dict[str, str]] = {
         "analytics_home_lbl": "🏠 للمنزل",
         "analytics_desk_lbl": "🏢 للمكتب (Stop Desk)",
         "analytics_csv_caption": "📊 <b>تقرير التحليلات الشامل ({period})</b>\n📅 {date} UTC",
+        "btn_admin_blacklist": "🛡️ القائمة السوداء",
+        "btn_report_fake_order": "🚨 تبليغ عن طلب وهمي / حظر",
+        "order_blocked_blacklist": "🚫 <b>عذراً، لا يمكنك إتمام الطلب.</b>\nحسابك أو رقم هاتفك مدرج في القائمة السوداء بسبب إلغاءات متكررة أو مخالفات.\nإذا كنت تعتقد أن هذا خطأ، تواصل مع الدعم الفني.",
+        "order_rate_limited": "⏳ يرجى الانتظار {wait} ثانية قبل إرسال طلب جديد (حماية ضد التكرار والطلبات الوهمية).",
+        "flood_warn": "⏳ أبطئ قليلاً! عدد طلباتك سريع جداً، حاول مرة أخرى بعد ثوانٍ.",
+        "trust_label": "🛡️ موثوقية المشتري",
+        "trust_blacklisted": "🚫 محظور (القائمة السوداء)",
+        "trust_new": "🆕 زبون جديد (أول طلب)",
+        "trust_high_risk": "🔴 تحذير عالٍ: {done} مستلمة | {cancel} ملغاة ({rate:.0f}% إلغاء)",
+        "trust_medium": "🟡 متوسط: {done} مستلمة | {cancel} ملغاة",
+        "trust_good": "🟢 زبون موثوق: {done} مستلمة | 0 ملغاة",
+        "trust_active": "🔵 قيد المتابعة: {total} طلبات ({pending} انتظار)",
+        "fake_report_sent": "✅ تم إرسال بلاغ الطلب الوهمي إلى الإدارة للمراجعة والحظر.",
+        "bl_menu_title": "🛡️ <b>إدارة القائمة السوداء والحماية من الطلبات الوهمية</b>\n\nإجمالي المحظورين: <b>{count}</b>\nاضغط على أي عنصر لإزالة الحظر عنه:",
+        "bl_empty": "🛡️ <b>القائمة السوداء فارغة حالياً.</b>\nلا توجد حسابات أو أرقام هواتف محظورة.",
+        "bl_btn_add": "➕ إضافة للقائمة السوداء",
+        "bl_btn_check": "🔎 فحص رقم أو مستخدم",
+        "bl_add_prompt": "🛡️ أرسل معرّف تيليجرام (ID) أو رقم الهاتف للحظر، أو كليهما معاً:\nمثال رقم فقط: <code>0555123456</code>\nمثال ID فقط: <code>123456789</code>\nمثال كليهما: <code>123456789 0555123456</code>",
+        "bl_reason_prompt": "📝 أدخل سبب الحظر (أو اضغط تخطي):",
+        "bl_added": "✅ تمت الإضافة إلى القائمة السوداء بنجاح.",
+        "bl_removed": "✅ تمت إزالة الحظر بنجاح.",
+        "bl_check_prompt": "🔎 أرسل معرّف تيليجرام (ID) أو رقم الهاتف لفحص سجل المشتري وموثوقيته:",
     },
     "en": {
         "choose_lang": "🌐 Choose your language:",
@@ -900,6 +923,28 @@ TEXTS: dict[str, dict[str, str]] = {
         "analytics_home_lbl": "🏠 Home Delivery",
         "analytics_desk_lbl": "🏢 Stop Desk",
         "analytics_csv_caption": "📊 <b>Full Analytics Report ({period})</b>\n📅 {date} UTC",
+        "btn_admin_blacklist": "🛡️ Blacklist",
+        "btn_report_fake_order": "🚨 Report fake order / Ban",
+        "order_blocked_blacklist": "🚫 <b>Sorry, you cannot place this order.</b>\nYour account or phone number is blacklisted due to repeated cancellations or violations.\nContact support if you believe this is a mistake.",
+        "order_rate_limited": "⏳ Please wait {wait} seconds before placing another order (anti-spam protection).",
+        "flood_warn": "⏳ Slow down! Too many requests — please try again in a few seconds.",
+        "trust_label": "🛡️ Buyer Trust",
+        "trust_blacklisted": "🚫 Blacklisted",
+        "trust_new": "🆕 New customer (first order)",
+        "trust_high_risk": "🔴 High Risk: {done} delivered | {cancel} cancelled ({rate:.0f}% cancel)",
+        "trust_medium": "🟡 Moderate: {done} delivered | {cancel} cancelled",
+        "trust_good": "🟢 Trusted buyer: {done} delivered | 0 cancelled",
+        "trust_active": "🔵 In progress: {total} orders ({pending} pending)",
+        "fake_report_sent": "✅ Fake order report sent to admins for review and blacklisting.",
+        "bl_menu_title": "🛡️ <b>Blacklist & Anti-Fake Order Protection</b>\n\nTotal blocked entries: <b>{count}</b>\nTap an entry to unban:",
+        "bl_empty": "🛡️ <b>The blacklist is currently empty.</b>\nNo blocked users or phone numbers.",
+        "bl_btn_add": "➕ Add to Blacklist",
+        "bl_btn_check": "🔎 Check Phone / User",
+        "bl_add_prompt": "🛡️ Send a Telegram ID, a phone number, or both to block:\nPhone: <code>0555123456</code>\nID: <code>123456789</code>\nBoth: <code>123456789 0555123456</code>",
+        "bl_reason_prompt": "📝 Enter the ban reason (or tap skip):",
+        "bl_added": "✅ Added to blacklist successfully.",
+        "bl_removed": "✅ Entry removed from blacklist.",
+        "bl_check_prompt": "🔎 Send a Telegram ID or phone number to inspect buyer history & trust:",
     },
     "fr": {
         "choose_lang": "🌐 Choisissez votre langue :",
@@ -1240,6 +1285,28 @@ TEXTS: dict[str, dict[str, str]] = {
         "analytics_home_lbl": "🏠 À domicile",
         "analytics_desk_lbl": "🏢 Stop Desk",
         "analytics_csv_caption": "📊 <b>Rapport d'Analyses Complet ({period})</b>\n📅 {date} UTC",
+        "btn_admin_blacklist": "🛡️ Liste noire",
+        "btn_report_fake_order": "🚨 Signaler fausse commande",
+        "order_blocked_blacklist": "🚫 <b>Désolé, impossible de valider votre commande.</b>\nVotre compte ou numéro de téléphone est sur la liste noire suite à des annulations répétées.\nContactez le support en cas d'erreur.",
+        "order_rate_limited": "⏳ Veuillez patienter {wait} secondes avant de passer une nouvelle commande (protection anti-spam).",
+        "flood_warn": "⏳ Doucement ! Trop de requêtes, veuillez réessayer dans quelques secondes.",
+        "trust_label": "🛡️ Fiabilité acheteur",
+        "trust_blacklisted": "🚫 Bloqué (Liste noire)",
+        "trust_new": "🆕 Nouveau client (1re commande)",
+        "trust_high_risk": "🔴 Risque élevé : {done} livrées | {cancel} annulées ({rate:.0f}%)",
+        "trust_medium": "🟡 Moyen : {done} livrées | {cancel} annulées",
+        "trust_good": "🟢 Client fiable : {done} livrées | 0 annulée",
+        "trust_active": "🔵 En cours : {total} commandes ({pending} en attente)",
+        "fake_report_sent": "✅ Signalement de fausse commande envoyé à l'administration.",
+        "bl_menu_title": "🛡️ <b>Liste Noire & Protection Anti-Fausses Commandes</b>\n\nTotal bloqués : <b>{count}</b>\nAppuyez sur une entrée pour débloquer :",
+        "bl_empty": "🛡️ <b>La liste noire est vide.</b>\nAucun compte ni numéro bloqué.",
+        "bl_btn_add": "➕ Ajouter à la liste noire",
+        "bl_btn_check": "🔎 Vérifier numéro / ID",
+        "bl_add_prompt": "🛡️ Envoyez un ID Telegram, un numéro de téléphone ou les deux :\nTéléphone : <code>0555123456</code>\nID : <code>123456789</code>\nLes deux : <code>123456789 0555123456</code>",
+        "bl_reason_prompt": "📝 Entrez le motif du blocage (ou passez) :",
+        "bl_added": "✅ Ajouté à la liste noire avec succès.",
+        "bl_removed": "✅ Retiré de la liste noire.",
+        "bl_check_prompt": "🔎 Envoyez un ID Telegram ou un numéro de téléphone pour vérifier la fiabilité de l'acheteur :",
     },
 }
 
@@ -1593,6 +1660,17 @@ class AdRequest(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class BlacklistedEntry(Base):
+    __tablename__ = "blacklisted_entries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_tg_id: Mapped[Optional[int]] = mapped_column(BigInteger, index=True, nullable=True)
+    phone_norm: Mapped[str] = mapped_column(String(40), index=True, default="")
+    reason: Mapped[str] = mapped_column(String(300), default="")
+    added_by: Mapped[int] = mapped_column(BigInteger, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 async def _ensure_schema_columns(conn) -> None:
     """Safely add new columns if upgrading an existing market_v10.db file."""
     migrations = [
@@ -1799,6 +1877,12 @@ class WalletTopupFSM(StatesGroup):
 
 class AdminChannelFSM(StatesGroup):
     channel_id = State()
+
+
+class AdminBlacklistFSM(StatesGroup):
+    add_target = State()
+    add_reason = State()
+    check_target = State()
 
 
 class BroadcastFSM(StatesGroup):
@@ -2808,6 +2892,7 @@ async def _build_admin_panel_kb(lang: str) -> InlineKeyboardMarkup:
         tck = (await s.execute(select(func.count(SupportTicket.id)).where(SupportTicket.status == "open"))).scalar()
         bads = (await s.execute(select(func.count(BotAd.id)).where(BotAd.status == "pending"))).scalar()
         adreqs = (await s.execute(select(func.count(AdRequest.id)).where(AdRequest.status == "pending"))).scalar()
+        bl_cnt = (await s.execute(select(func.count(BlacklistedEntry.id)))).scalar()
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"{t(lang, 'btn_pending')} ({c})", callback_data="admin:pending"),
          InlineKeyboardButton(text=f"{t(lang, 'btn_reports')} ({r})", callback_data="admin:reports")],
@@ -2817,11 +2902,172 @@ async def _build_admin_panel_kb(lang: str) -> InlineKeyboardMarkup:
          InlineKeyboardButton(text=t(lang, "btn_global_stats"), callback_data="admin:gstats")],
         [InlineKeyboardButton(text=f"{t(lang, 'btn_manage_bot_ads')} ({bads})", callback_data="admin:botads"),
          InlineKeyboardButton(text=f"{t(lang, 'btn_manage_ad_requests')} ({adreqs})", callback_data="admin:adreqs")],
-        [InlineKeyboardButton(text=t(lang, "btn_admin_channel"), callback_data="admin:channel"),
-         InlineKeyboardButton(text=t(lang, "btn_admin_backup"), callback_data="admin:backup")],
-        [InlineKeyboardButton(text=t(lang, "btn_broadcast"), callback_data="admin:broadcast")],
+        [InlineKeyboardButton(text=f"{t(lang, 'btn_admin_blacklist')} ({bl_cnt})", callback_data="admin:blacklist"),
+         InlineKeyboardButton(text=t(lang, "btn_admin_channel"), callback_data="admin:channel")],
+        [InlineKeyboardButton(text=t(lang, "btn_admin_backup"), callback_data="admin:backup"),
+         InlineKeyboardButton(text=t(lang, "btn_broadcast"), callback_data="admin:broadcast")],
         [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="menu:home")],
     ])
+
+
+# ─── Anti-Fake Orders, Buyer Trust Score, Blacklist & Rate Limiting ───
+
+_FLOOD_WINDOW_SEC: Final[float] = 10.0
+_FLOOD_MAX_EVENTS: Final[int] = 20
+_FLOOD_BUCKETS: dict[int, list[float]] = {}
+_FLOOD_LAST_WARN: dict[int, float] = {}
+
+_ORDER_MIN_GAP_SEC: Final[float] = 20.0
+_ORDER_WINDOW_SEC: Final[float] = 600.0
+_ORDER_MAX_PER_WINDOW: Final[int] = 3
+_ORDER_SUBMISSIONS: dict[int, list[float]] = {}
+
+
+def _normalize_phone(raw: str) -> str:
+    """Normalize phone number so +213555123456, 00213 555 123 456, and 0555123456 match identically."""
+    digits = re.sub(r"\D+", "", str(raw or ""))
+    if not digits:
+        return ""
+    if digits.startswith("00213") and len(digits) == 14:
+        return "0" + digits[5:]
+    if digits.startswith("213") and len(digits) == 12:
+        return "0" + digits[3:]
+    if len(digits) == 9 and digits[0] in ("5", "6", "7"):
+        return "0" + digits
+    return digits[:30]
+
+
+def _check_order_rate_limit(user_id: int) -> int:
+    """Return remaining cooldown seconds if user exceeded order rate limits, else 0."""
+    if user_id in ADMIN_IDS:
+        return 0
+    now = time.time()
+    hist = [ts for ts in _ORDER_SUBMISSIONS.get(user_id, []) if now - ts < _ORDER_WINDOW_SEC]
+    _ORDER_SUBMISSIONS[user_id] = hist
+    if hist:
+        gap = now - hist[-1]
+        if gap < _ORDER_MIN_GAP_SEC:
+            return max(1, int(math.ceil(_ORDER_MIN_GAP_SEC - gap)))
+    if len(hist) >= _ORDER_MAX_PER_WINDOW:
+        wait = _ORDER_WINDOW_SEC - (now - hist[0])
+        return max(1, int(math.ceil(wait)))
+    return 0
+
+
+def _record_order_submission(user_id: int) -> None:
+    if user_id in ADMIN_IDS:
+        return
+    now = time.time()
+    hist = [ts for ts in _ORDER_SUBMISSIONS.get(user_id, []) if now - ts < _ORDER_WINDOW_SEC]
+    hist.append(now)
+    _ORDER_SUBMISSIONS[user_id] = hist
+
+
+async def is_blacklisted(s, user_tg_id: Optional[int] = None, phone: str = "") -> Optional[BlacklistedEntry]:
+    """Return matching BlacklistedEntry if user_tg_id or normalized phone is banned."""
+    conds = []
+    if user_tg_id and user_tg_id not in ADMIN_IDS:
+        conds.append(BlacklistedEntry.user_tg_id == user_tg_id)
+    pnorm = _normalize_phone(phone)
+    if pnorm and len(pnorm) >= 6:
+        conds.append(BlacklistedEntry.phone_norm == pnorm)
+    if not conds:
+        return None
+    return (await s.execute(select(BlacklistedEntry).where(or_(*conds)).limit(1))).scalar_one_or_none()
+
+
+async def get_buyer_trust_summary(
+    s,
+    buyer_tg_id: Optional[int],
+    phone: str = "",
+    lang: str = "ar",
+    exclude_order_id: Optional[int] = None,
+) -> tuple[str, dict[str, Any]]:
+    """Compute buyer reliability badge & stats across all historical orders matching TG ID or phone."""
+    bl = await is_blacklisted(s, buyer_tg_id, phone)
+    pnorm = _normalize_phone(phone)
+
+    rows_by_id: dict[int, tuple[str, str]] = {}
+    if buyer_tg_id:
+        q = select(Order.id, Order.status, Order.buyer_phone).where(Order.buyer_tg_id == buyer_tg_id)
+        for oid, st, ph in (await s.execute(q)).all():
+            rows_by_id[oid] = (st, ph or "")
+
+    if pnorm and len(pnorm) >= 8:
+        tail = pnorm[-8:]
+        q2 = select(Order.id, Order.status, Order.buyer_phone).where(Order.buyer_phone.like(f"%{tail}%"))
+        for oid, st, ph in (await s.execute(q2)).all():
+            if _normalize_phone(ph) == pnorm:
+                rows_by_id[oid] = (st, ph or "")
+
+    if exclude_order_id and exclude_order_id in rows_by_id:
+        del rows_by_id[exclude_order_id]
+
+    statuses = [st for st, _ in rows_by_id.values()]
+    total = len(statuses)
+    done = sum(1 for st in statuses if st == "completed")
+    cancel = sum(1 for st in statuses if st == "cancelled")
+    pending = sum(1 for st in statuses if st == "pending")
+    shipped = sum(1 for st in statuses if st == "shipped")
+    cancel_rate = (cancel / total * 100.0) if total else 0.0
+
+    info = {
+        "blacklisted": bl is not None,
+        "bl_reason": bl.reason if bl else "",
+        "total": total,
+        "completed": done,
+        "cancelled": cancel,
+        "pending": pending,
+        "shipped": shipped,
+        "cancel_rate": cancel_rate,
+    }
+
+    if bl is not None:
+        badge = t(lang, "trust_blacklisted")
+    elif total == 0:
+        badge = t(lang, "trust_new")
+    elif cancel >= 3 or (total >= 3 and cancel_rate >= 50.0):
+        badge = t(lang, "trust_high_risk", done=done, cancel=cancel, rate=cancel_rate)
+    elif cancel >= 1:
+        badge = t(lang, "trust_medium", done=done, cancel=cancel)
+    elif done >= 1:
+        badge = t(lang, "trust_good", done=done)
+    else:
+        badge = t(lang, "trust_active", total=total, pending=pending)
+
+    return badge, info
+
+
+class AntiFloodMiddleware(BaseMiddleware):
+    """Lightweight sliding-window anti-spam middleware for messages and callback queries."""
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        user = getattr(event, "from_user", None)
+        if user is None or user.id in ADMIN_IDS:
+            return await handler(event, data)
+        uid = user.id
+        now = time.time()
+        bucket = [ts for ts in _FLOOD_BUCKETS.get(uid, []) if now - ts < _FLOOD_WINDOW_SEC]
+        if len(bucket) >= _FLOOD_MAX_EVENTS:
+            _FLOOD_BUCKETS[uid] = bucket
+            last_w = _FLOOD_LAST_WARN.get(uid, 0.0)
+            if now - last_w >= 5.0:
+                _FLOOD_LAST_WARN[uid] = now
+                warn_txt = t(DEFAULT_LANG, "flood_warn")
+                with suppress(Exception):
+                    if isinstance(event, CallbackQuery):
+                        await event.answer(warn_txt, show_alert=True)
+                    elif isinstance(event, Message):
+                        await event.answer(warn_txt)
+            return None
+        bucket.append(now)
+        _FLOOD_BUCKETS[uid] = bucket
+        return await handler(event, data)
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -3948,7 +4194,14 @@ async def cart_checkout_start(cb: CallbackQuery, state: FSMContext):
 
 async def start_checkout_flow(msg_obj, user_id: int, state: FSMContext):
     lang = await get_lang(user_id)
+    wait = _check_order_rate_limit(user_id)
+    if wait > 0:
+        await state.clear()
+        return await msg_obj.answer(t(lang, "order_rate_limited", wait=wait))
     async with Session() as s:
+        if await is_blacklisted(s, user_tg_id=user_id):
+            await state.clear()
+            return await msg_obj.answer(t(lang, "order_blocked_blacklist"))
         u = await ensure_user(s, user_id, lang)
         await s.commit()
         has_profile = bool(u.saved_name and u.saved_phone and u.saved_address)
@@ -4055,7 +4308,15 @@ async def order_phone(message: Message, state: FSMContext):
     lang = await get_lang(message.from_user.id)
     if not message.text or not message.text.strip():
         return await message.answer(t(lang, "order_phone"))
-    await state.update_data(p_phone=message.text.strip()[:MAX_PROFILE_PHONE_LEN])
+    phone_val = message.text.strip()[:MAX_PROFILE_PHONE_LEN]
+    async with Session() as s:
+        if await is_blacklisted(s, user_tg_id=message.from_user.id, phone=phone_val):
+            await state.clear()
+            return await message.answer(
+                t(lang, "order_blocked_blacklist"),
+                reply_markup=await get_main_kb(message.from_user.id, lang),
+            )
+    await state.update_data(p_phone=phone_val)
     await state.set_state(OrderFSM.wilaya)
     kb = build_wilaya_kb(1, "chk_wpg", "chk_w", "menu:home", lang)
     await message.answer("🗺️ اختر ولايتك من القائمة (أو أرسل رقم الولاية من 1 إلى 58):", reply_markup=kb)
@@ -4179,8 +4440,22 @@ async def process_checkout(message_obj, user_id: int, state: FSMContext, promo_c
         await state.clear()
         return await message_obj.answer(t(lang, "cancelled"), reply_markup=await get_main_kb(user_id, lang))
 
+    wait = _check_order_rate_limit(user_id)
+    if wait > 0:
+        await state.clear()
+        return await message_obj.answer(
+            t(lang, "order_rate_limited", wait=wait),
+            reply_markup=await get_main_kb(user_id, lang),
+        )
+
     pairs: list[tuple[Product, str, int]] = []
     async with Session() as s:
+        if await is_blacklisted(s, user_tg_id=user_id, phone=phone):
+            await state.clear()
+            return await message_obj.answer(
+                t(lang, "order_blocked_blacklist"),
+                reply_markup=await get_main_kb(user_id, lang),
+            )
         u = await ensure_user(s, user_id, lang)
         if not u.saved_name:
             u.saved_name, u.saved_phone, u.saved_address = name, phone, addr
@@ -4295,6 +4570,7 @@ async def process_checkout(message_obj, user_id: int, state: FSMContext, promo_c
                 total_delivery += computed_delivery
 
                 sl = await get_lang(store.owner_tg_id)
+                trust_badge, _trust_info = await get_buyer_trust_summary(s, user_id, phone, sl)
                 seller_text = (
                     t(
                         sl,
@@ -4308,7 +4584,8 @@ async def process_checkout(message_obj, user_id: int, state: FSMContext, promo_c
                         price=f"{final_price:.2f} {esc(p.currency)}",
                         delivery=f"{computed_delivery:g} {esc(p.currency)}",
                     )
-                    + f"\n🔢 الكمية: <b>{qty}</b>\n🗺️ الولاية: <b>{esc(w_label)}</b>\n🚚 التوصيل: {dtype_label}"
+                    + f"\n🔢 الكمية: <b>{qty}</b>\n🗺️ الولاية: <b>{esc(wilaya_label(wilaya_code, sl) if wilaya_code else '—')}</b>\n🚚 التوصيل: {dtype_label}"
+                    + f"\n{t(sl, 'trust_label')}: <b>{trust_badge}</b>"
                 )
                 seller_notifications.append((store.owner_tg_id, seller_text))
 
@@ -4316,6 +4593,8 @@ async def process_checkout(message_obj, user_id: int, state: FSMContext, promo_c
             await s.execute(delete(CartItem).where(CartItem.user_tg_id == user_id))
         await s.commit()
 
+    if orders_created > 0:
+        _record_order_submission(user_id)
     await state.clear()
 
     for seller_uid, seller_text in seller_notifications:
@@ -6468,6 +6747,9 @@ async def _render_order_view(msg_obj: Message, oid: int, lang: str, edit: bool =
         if not order:
             return
         p = (await s.execute(select(Product).where(Product.id == order.product_id))).scalar_one_or_none() if order.product_id else None
+        trust_badge, _tinfo = await get_buyer_trust_summary(
+            s, order.buyer_tg_id, order.buyer_phone, lang, exclude_order_id=oid
+        )
     p_title = esc(p.title if p else (order.product_title or "منتج محذوف"))
     p_curr = esc(p.currency if p else (order.product_currency or DEFAULT_CURRENCY))
     sid = order.store_id or (p.store_id if p else 0)
@@ -6477,11 +6759,12 @@ async def _render_order_view(msg_obj: Message, oid: int, lang: str, edit: bool =
         "completed": t(lang, "status_completed"),
         "cancelled": t(lang, "status_cancelled"),
     }
-    dtype_label = "🏢 مكتب التوصيل (Stop Desk)" if order.delivery_type == "desk" else "🏠 باب المنزل"
+    dtype_label = t(lang, "analytics_desk_lbl") if order.delivery_type == "desk" else t(lang, "analytics_home_lbl")
     extras = [f"🔢 الكمية: <b>{order.quantity or 1}</b>"]
     if order.buyer_wilaya:
-        extras.append(f"🗺️ الولاية: <b>{esc(wilaya_label(order.buyer_wilaya))}</b>")
+        extras.append(f"🗺️ الولاية: <b>{esc(wilaya_label(order.buyer_wilaya, lang))}</b>")
     extras.append(f"🚚 طريقة التوصيل: {dtype_label}")
+    extras.append(f"{t(lang, 'trust_label')}: <b>{trust_badge}</b>")
     if order.tracking_info:
         extras.append(f"🔎 معلومات التتبع: <code>{esc(order.tracking_info)}</code>")
     text = (
@@ -6504,10 +6787,11 @@ async def _render_order_view(msg_obj: Message, oid: int, lang: str, edit: bool =
     )
     back_cb = f"st_orders:{sid}:1" if sid else "menu:home"
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t(lang, "status_pending"), callback_data=f"ord_st:{oid}:pending")],
-        [InlineKeyboardButton(text=t(lang, "status_shipped"), callback_data=f"ord_st:{oid}:shipped")],
-        [InlineKeyboardButton(text=t(lang, "status_completed"), callback_data=f"ord_st:{oid}:completed")],
-        [InlineKeyboardButton(text=t(lang, "status_cancelled"), callback_data=f"ord_st:{oid}:cancelled")],
+        [InlineKeyboardButton(text=t(lang, "status_pending"), callback_data=f"ord_st:{oid}:pending"),
+         InlineKeyboardButton(text=t(lang, "status_shipped"), callback_data=f"ord_st:{oid}:shipped")],
+        [InlineKeyboardButton(text=t(lang, "status_completed"), callback_data=f"ord_st:{oid}:completed"),
+         InlineKeyboardButton(text=t(lang, "status_cancelled"), callback_data=f"ord_st:{oid}:cancelled")],
+        [InlineKeyboardButton(text=t(lang, "btn_report_fake_order"), callback_data=f"ord_fake_rep:{oid}")],
         [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=back_cb)],
     ])
     if edit:
@@ -6517,6 +6801,61 @@ async def _render_order_view(msg_obj: Message, oid: int, lang: str, edit: bool =
         except Exception:
             pass
     await msg_obj.answer(text, reply_markup=kb)
+
+
+@seller_router.callback_query(F.data.startswith("ord_fake_rep:"))
+async def seller_report_fake_order(cb: CallbackQuery):
+    oid = int(cb.data.split(":")[1])
+    lang = await get_lang(cb.from_user.id)
+    async with Session() as s:
+        order = (await s.execute(select(Order).where(Order.id == oid))).scalar_one_or_none()
+        if not order:
+            return await cb.answer("❌ الطلب غير موجود.", show_alert=True)
+        if not (order.seller_tg_id == cb.from_user.id or cb.from_user.id in ADMIN_IDS):
+            return await cb.answer("⛔ غير مصرح.", show_alert=True)
+        trust_badge, _tinfo = await get_buyer_trust_summary(s, order.buyer_tg_id, order.buyer_phone, "ar")
+        pnorm = _normalize_phone(order.buyer_phone)
+        buyer_uid = int(order.buyer_tg_id or 0)
+        rep = Report(
+            reporter_tg_id=cb.from_user.id,
+            target_type="fake_order",
+            target_id=oid,
+            reason=f"Fake order #{oid} | buyer_id={buyer_uid} | phone={order.buyer_phone}",
+        )
+        s.add(rep)
+        await s.commit()
+
+    admin_msg = (
+        f"🚨 <b>بلاغ طلب وهمي من بائع!</b>\n\n"
+        f"📦 رقم الطلب: <b>#{oid}</b>\n"
+        f"👤 المشتري: {esc(order.buyer_name)}\n"
+        f"🆔 معرّف تيليجرام: <code>{buyer_uid}</code>\n"
+        f"📞 الهاتف: <code>{esc(order.buyer_phone)}</code>\n"
+        f"🛡️ السجل: <b>{trust_badge}</b>\n"
+        f"🏪 المبلّغ (البائع): <code>{cb.from_user.id}</code>"
+    )
+    bl_buttons = []
+    if buyer_uid and pnorm:
+        bl_buttons.append([InlineKeyboardButton(
+            text="🚫 حظر الحساب + الرقم",
+            callback_data=f"admin:bl_quick:{buyer_uid}:{pnorm}",
+        )])
+    if pnorm:
+        bl_buttons.append([InlineKeyboardButton(
+            text="📵 حظر الرقم فقط",
+            callback_data=f"admin:bl_quick:0:{pnorm}",
+        )])
+    if buyer_uid:
+        bl_buttons.append([InlineKeyboardButton(
+            text="⛔ حظر الحساب فقط",
+            callback_data=f"admin:bl_quick:{buyer_uid}:",
+        )])
+    bl_buttons.append([InlineKeyboardButton(text="✅ تجاهل", callback_data="admin:bl_dismiss")])
+    kb = InlineKeyboardMarkup(inline_keyboard=bl_buttons)
+    for aid in ADMIN_IDS:
+        with suppress(Exception):
+            await cb.bot.send_message(aid, admin_msg, reply_markup=kb)
+    await cb.answer(t(lang, "fake_report_sent"), show_alert=True)
 
 
 async def _apply_order_status(bot: Bot, oid: int, new_status: str, tracking_info: Optional[str] = None) -> bool:
@@ -8212,6 +8551,266 @@ async def admin_backup_cb(cb: CallbackQuery):
         await cb.message.answer("❌ تعذر إنشاء النسخة الاحتياطية.")
 
 
+# ─── Admin Blacklist & Buyer Trust Inspector ───
+
+async def _render_admin_blacklist(msg_obj: Message, lang: str, page: int = 1, edit: bool = True):
+    async with Session() as s:
+        total = (await s.execute(select(func.count(BlacklistedEntry.id)))).scalar() or 0
+        total_pages = max(1, math.ceil(total / ITEMS_PER_PAGE))
+        page = max(1, min(page, total_pages))
+        entries = (
+            await s.execute(
+                select(BlacklistedEntry)
+                .order_by(BlacklistedEntry.created_at.desc())
+                .limit(ITEMS_PER_PAGE)
+                .offset((page - 1) * ITEMS_PER_PAGE)
+            )
+        ).scalars().all()
+
+    top_rows = [[
+        InlineKeyboardButton(text=t(lang, "bl_btn_add"), callback_data="admin:bl_add"),
+        InlineKeyboardButton(text=t(lang, "bl_btn_check"), callback_data="admin:bl_check"),
+    ]]
+    items: list[tuple[str, str]] = []
+    for e in entries:
+        parts = []
+        if e.user_tg_id:
+            parts.append(f"ID:{e.user_tg_id}")
+        if e.phone_norm:
+            parts.append(f"📞{e.phone_norm}")
+        label = " | ".join(parts) or f"#{e.id}"
+        if e.reason:
+            label += f" ({e.reason[:20]})"
+        items.append((f"🗑️ {label}", f"admin:bl_del:{e.id}:{page}"))
+
+    text = t(lang, "bl_menu_title", count=total) if total > 0 else t(lang, "bl_empty")
+    kb = build_sql_pagination_kb(
+        items,
+        page,
+        total,
+        "admin:bl_pg",
+        lang,
+        top_rows=top_rows,
+        extra_buttons=[InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="menu:admin")],
+    )
+    if edit:
+        try:
+            await msg_obj.edit_text(text, reply_markup=kb)
+            return
+        except Exception:
+            pass
+    await msg_obj.answer(text, reply_markup=kb)
+
+
+@seller_router.callback_query(F.data == "admin:blacklist")
+async def admin_blacklist_menu(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    await state.clear()
+    lang = await get_lang(cb.from_user.id)
+    await _render_admin_blacklist(cb.message, lang, page=1, edit=True)
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("admin:bl_pg:"))
+async def admin_blacklist_page(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    lang = await get_lang(cb.from_user.id)
+    page = int(cb.data.split(":")[2])
+    await _render_admin_blacklist(cb.message, lang, page=page, edit=True)
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("admin:bl_del:"))
+async def admin_blacklist_delete(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    parts = cb.data.split(":")
+    eid = int(parts[2])
+    page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 1
+    lang = await get_lang(cb.from_user.id)
+    async with Session() as s:
+        entry = await s.get(BlacklistedEntry, eid)
+        if entry:
+            await s.delete(entry)
+            await s.commit()
+    await cb.answer(t(lang, "bl_removed"), show_alert=True)
+    await _render_admin_blacklist(cb.message, lang, page=page, edit=True)
+
+
+def _parse_blacklist_target(raw: str) -> tuple[Optional[int], str]:
+    """Parse admin input into (user_tg_id, phone_norm)."""
+    tokens = [tok.strip() for tok in (raw or "").replace(",", " ").split() if tok.strip()]
+    uid: Optional[int] = None
+    pnorm = ""
+    for tok in tokens:
+        digits = re.sub(r"\D+", "", tok)
+        if not digits:
+            continue
+        is_phone_like = (
+            tok.startswith("+")
+            or tok.startswith("0")
+            or digits.startswith("00213")
+            or (digits.startswith("213") and len(digits) == 12)
+        )
+        if is_phone_like and not pnorm:
+            pnorm = _normalize_phone(tok)
+        elif uid is None and digits.isdigit():
+            uid = int(digits)
+        elif not pnorm:
+            pnorm = _normalize_phone(tok)
+    return uid, pnorm
+
+
+@seller_router.callback_query(F.data == "admin:bl_add")
+async def admin_blacklist_add_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    lang = await get_lang(cb.from_user.id)
+    await state.set_state(AdminBlacklistFSM.add_target)
+    await cb.message.answer(t(lang, "bl_add_prompt"), reply_markup=back_kb(lang, "admin:blacklist"))
+    await cb.answer()
+
+
+@seller_router.message(AdminBlacklistFSM.add_target)
+async def admin_blacklist_add_target(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    lang = await get_lang(message.from_user.id)
+    uid, pnorm = _parse_blacklist_target(message.text or "")
+    if not uid and not pnorm:
+        return await message.answer(t(lang, "bl_add_prompt"))
+    if uid and uid in ADMIN_IDS:
+        return await message.answer("❌ لا يمكن حظر حساب أدمن.")
+    await state.update_data(bl_uid=uid, bl_phone=pnorm)
+    await state.set_state(AdminBlacklistFSM.add_reason)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t(lang, "btn_skip_note"), callback_data="admin:bl_skip_reason")],
+        [InlineKeyboardButton(text=t(lang, "btn_cancel"), callback_data="admin:blacklist")],
+    ])
+    await message.answer(t(lang, "bl_reason_prompt"), reply_markup=kb)
+
+
+async def _commit_blacklist_entry(admin_id: int, uid: Optional[int], pnorm: str, reason: str) -> None:
+    async with Session() as s:
+        existing = await is_blacklisted(s, user_tg_id=uid, phone=pnorm)
+        if existing:
+            if uid and not existing.user_tg_id:
+                existing.user_tg_id = uid
+            if pnorm and not existing.phone_norm:
+                existing.phone_norm = pnorm
+            if reason:
+                existing.reason = reason[:300]
+        else:
+            s.add(BlacklistedEntry(
+                user_tg_id=uid,
+                phone_norm=pnorm,
+                reason=reason[:300],
+                added_by=admin_id,
+            ))
+        await s.commit()
+
+
+@seller_router.callback_query(F.data == "admin:bl_skip_reason")
+async def admin_blacklist_skip_reason(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    lang = await get_lang(cb.from_user.id)
+    data = await state.get_data()
+    uid = data.get("bl_uid")
+    pnorm = data.get("bl_phone", "")
+    await state.clear()
+    if uid or pnorm:
+        await _commit_blacklist_entry(cb.from_user.id, uid, pnorm, "")
+    await cb.answer(t(lang, "bl_added"), show_alert=True)
+    await _render_admin_blacklist(cb.message, lang, page=1, edit=False)
+
+
+@seller_router.message(AdminBlacklistFSM.add_reason)
+async def admin_blacklist_add_reason(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    lang = await get_lang(message.from_user.id)
+    data = await state.get_data()
+    uid = data.get("bl_uid")
+    pnorm = data.get("bl_phone", "")
+    reason = (message.text or "").strip()[:300]
+    await state.clear()
+    if uid or pnorm:
+        await _commit_blacklist_entry(message.from_user.id, uid, pnorm, reason)
+    await message.answer(t(lang, "bl_added"))
+    await _render_admin_blacklist(message, lang, page=1, edit=False)
+
+
+@seller_router.callback_query(F.data == "admin:bl_check")
+async def admin_blacklist_check_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    lang = await get_lang(cb.from_user.id)
+    await state.set_state(AdminBlacklistFSM.check_target)
+    await cb.message.answer(t(lang, "bl_check_prompt"), reply_markup=back_kb(lang, "admin:blacklist"))
+    await cb.answer()
+
+
+@seller_router.message(AdminBlacklistFSM.check_target)
+async def admin_blacklist_check_run(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    lang = await get_lang(message.from_user.id)
+    uid, pnorm = _parse_blacklist_target(message.text or "")
+    if not uid and not pnorm:
+        return await message.answer(t(lang, "bl_check_prompt"))
+    await state.clear()
+    async with Session() as s:
+        badge, info = await get_buyer_trust_summary(s, uid, pnorm, lang)
+    reason_line = f"\n📝 السبب: {esc(info['bl_reason'])}" if info["bl_reason"] else ""
+    summary = (
+        f"🔎 <b>نتيجة الفحص</b>\n\n"
+        f"🆔 ID: <code>{uid or '-'}</code>\n"
+        f"📞 الهاتف: <code>{pnorm or '-'}</code>\n"
+        f"{t(lang, 'trust_label')}: <b>{badge}</b>{reason_line}\n\n"
+        f"📊 السجل الكامل:\n"
+        f"• الإجمالي: <b>{info['total']}</b>\n"
+        f"• ✅ مكتملة: <b>{info['completed']}</b> | 🚚 مشحونة: <b>{info['shipped']}</b>\n"
+        f"• ⏳ انتظار: <b>{info['pending']}</b> | ❌ ملغاة: <b>{info['cancelled']}</b> ({info['cancel_rate']:.1f}%)"
+    )
+    kb_rows = []
+    if not info["blacklisted"]:
+        kb_rows.append([InlineKeyboardButton(
+            text="🚫 حظر الآن",
+            callback_data=f"admin:bl_quick:{uid or 0}:{pnorm}",
+        )])
+    kb_rows.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="admin:blacklist")])
+    await message.answer(summary, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+
+
+@seller_router.callback_query(F.data.startswith("admin:bl_quick:"))
+async def admin_blacklist_quick_ban(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    parts = cb.data.split(":", 3)
+    uid_val = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() and int(parts[2]) > 0 else None
+    pnorm = parts[3] if len(parts) > 3 else ""
+    if uid_val and uid_val in ADMIN_IDS:
+        return await cb.answer("❌ لا يمكن حظر أدمن.", show_alert=True)
+    if not uid_val and not pnorm:
+        return await cb.answer("❌ بيانات غير صالحة.", show_alert=True)
+    await _commit_blacklist_entry(cb.from_user.id, uid_val, pnorm, "بلاغ طلب وهمي")
+    with suppress(Exception):
+        await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.answer("🚫 تمت الإضافة إلى القائمة السوداء بنجاح!", show_alert=True)
+
+
+@seller_router.callback_query(F.data == "admin:bl_dismiss")
+async def admin_blacklist_dismiss(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    with suppress(Exception):
+        await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.answer("✅ تم تجاهل البلاغ.")
+
+
 # ════════════════════════════════════════════════════════════════════
 # 9. BACKGROUND TASKS, ERROR HANDLER & ENTRYPOINT (main.py)
 # ════════════════════════════════════════════════════════════════════
@@ -8363,6 +8962,9 @@ async def main() -> None:
             await bot.delete_webhook(drop_pending_updates=True)
 
         dp = Dispatcher(storage=MemoryStorage())
+        flood_mw = AntiFloodMiddleware()
+        dp.message.outer_middleware(flood_mw)
+        dp.callback_query.outer_middleware(flood_mw)
         dp.include_router(buyer_router)
         dp.include_router(seller_router)
         dp.errors.register(global_error_handler)
