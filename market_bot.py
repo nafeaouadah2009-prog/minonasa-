@@ -34,15 +34,19 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Final, Optional
 
 
+with suppress(Exception):
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+
+
 def _ensure_runtime_deps() -> None:
-    """Auto-install missing runtime dependencies (greenlet, aiosqlite, pillow, etc.) on minimal hosts."""
+    """Auto-install missing core runtime dependencies on minimal Python-only hosts."""
     required = (
         ("aiogram", "aiogram"),
         ("sqlalchemy", "sqlalchemy"),
         ("greenlet", "greenlet"),
         ("aiosqlite", "aiosqlite"),
         ("qrcode", "qrcode"),
-        ("PIL", "pillow"),
     )
     missing = [pkg for mod, pkg in required if importlib.util.find_spec(mod) is None]
     if not missing:
@@ -239,6 +243,8 @@ LANG_NAMES: Final[dict[str, str]] = {
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    stream=sys.stdout,
+    force=True,
 )
 logger = logging.getLogger("market_bot")
 
@@ -3680,7 +3686,7 @@ async def cmd_start(message: Message, state: FSMContext):
         ad = (
             await s.execute(
                 select(BotAd)
-                .where(BotAd.status == "approved", BotAd.expires_at.isnot(None), BotAd.expires_at > utcnow())
+                .where(BotAd.status == "approved", BotAd.expires_at.is_not(None), BotAd.expires_at > utcnow())
                 .order_by(func.random())
                 .limit(1)
             )
@@ -3864,7 +3870,7 @@ async def ads_featured(cb: CallbackQuery):
                 .where(
                     Product.status == "approved",
                     Product.is_deleted.is_(False),
-                    Product.featured_until.isnot(None),
+                    Product.featured_until.is_not(None),
                     Product.featured_until > utcnow(),
                 )
                 .order_by(Product.featured_until.desc())
@@ -3887,7 +3893,7 @@ async def _render_bots_list(cb: CallbackQuery, page: int):
         bots = (
             await s.execute(
                 select(BotAd)
-                .where(BotAd.status == "approved", BotAd.expires_at.isnot(None), BotAd.expires_at > utcnow())
+                .where(BotAd.status == "approved", BotAd.expires_at.is_not(None), BotAd.expires_at > utcnow())
                 .order_by(BotAd.created_at.desc())
             )
         ).scalars().all()
@@ -5739,15 +5745,15 @@ async def _fetch_filtered_products(flt: str, page: int, category_id: Optional[in
         if category_id is not None:
             base_conds.append(Product.category_id == category_id)
         if flt == "flash":
-            base_conds.append(Product.flash_sale_price.isnot(None))
-            base_conds.append(Product.flash_sale_ends_at.isnot(None))
+            base_conds.append(Product.flash_sale_price.is_not(None))
+            base_conds.append(Product.flash_sale_ends_at.is_not(None))
             base_conds.append(Product.flash_sale_ends_at > now)
 
         count_q = select(func.count(Product.id)).where(*base_conds)
         list_q = select(Product).where(*base_conds)
 
         if flt == "verified":
-            verified_cond = or_(Store.verified.is_(True), and_(Store.vip_until.isnot(None), Store.vip_until > now))
+            verified_cond = or_(Store.verified.is_(True), and_(Store.vip_until.is_not(None), Store.vip_until > now))
             count_q = count_q.join(Store, Store.id == Product.store_id).where(verified_cond)
             list_q = list_q.join(Store, Store.id == Product.store_id).where(verified_cond)
 
@@ -5755,8 +5761,8 @@ async def _fetch_filtered_products(flt: str, page: int, category_id: Optional[in
             eff_price = case(
                 (
                     and_(
-                        Product.flash_sale_price.isnot(None),
-                        Product.flash_sale_ends_at.isnot(None),
+                        Product.flash_sale_price.is_not(None),
+                        Product.flash_sale_ends_at.is_not(None),
                         Product.flash_sale_ends_at > now,
                     ),
                     Product.flash_sale_price,
@@ -5942,7 +5948,7 @@ async def search_store_exec(message: Message, state: FSMContext):
 
 async def _fetch_top_stores_page(page: int, lang: str):
     now = utcnow()
-    vip_rank = case((and_(Store.vip_until.isnot(None), Store.vip_until > now), 1), else_=0)
+    vip_rank = case((and_(Store.vip_until.is_not(None), Store.vip_until > now), 1), else_=0)
     async with Session() as s:
         total = (await s.execute(select(func.count(Store.id)))).scalar() or 0
         total_pages = max(1, math.ceil(total / ITEMS_PER_PAGE))
@@ -6985,15 +6991,21 @@ async def share_qr(cb: CallbackQuery):
         return await cb.answer("Not found")
     slug = store.custom_slug if store.custom_slug else str(store.id)
     share_url = f"https://t.me/{BOT_USERNAME}?start=store_{slug}"
-    qr = qrcode.QRCode(version=1, box_size=10, border=4)
-    qr.add_data(share_url)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
-    bio = io.BytesIO()
-    img.save(bio, "PNG")
-    bio.seek(0)
-    photo = BufferedInputFile(bio.read(), filename=f"qr_{store.id}.png")
-    await cb.message.answer_photo(photo=photo, caption=t(lang, "qr_caption", name=esc(store.name)))
+    try:
+        qr = qrcode.QRCode(version=1, box_size=10, border=4)
+        qr.add_data(share_url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        bio = io.BytesIO()
+        img.save(bio, "PNG")
+        bio.seek(0)
+        photo = BufferedInputFile(bio.read(), filename=f"qr_{store.id}.png")
+        await cb.message.answer_photo(photo=photo, caption=t(lang, "qr_caption", name=esc(store.name)))
+    except Exception as e:
+        logger.warning(f"QR generation fallback: {e}")
+        await cb.message.answer(
+            f"🔗 <b>{esc(store.name)}</b>\n<code>{esc(share_url)}</code>"
+        )
     await cb.answer()
 
 
@@ -11017,10 +11029,12 @@ async def set_bot_commands(bot: Bot) -> None:
 async def main() -> None:
     global BOT_USERNAME
 
+    print("[startup] Initializing database...", flush=True)
     await init_db()
     if Session is None:
         raise RuntimeError("Database initialization failed (Session is None)")
     await seed_categories(Session)
+    print("[startup] Database ready. Connecting to Telegram...", flush=True)
 
     bot = Bot(
         token=BOT_TOKEN,
@@ -11031,11 +11045,12 @@ async def main() -> None:
     try:
         me = await bot.get_me()
         BOT_USERNAME = me.username or ""
+        print(f"[startup] Connected as @{BOT_USERNAME} (ID: {me.id})", flush=True)
         logger.info(f"Bot started as @{BOT_USERNAME}")
 
         await set_bot_commands(bot)
         with suppress(TelegramAPIError):
-            await bot.delete_webhook(drop_pending_updates=True)
+            await bot.delete_webhook(drop_pending_updates=False)
 
         dp = Dispatcher(storage=MemoryStorage())
         flood_mw = AntiFloodMiddleware()
@@ -11048,9 +11063,11 @@ async def main() -> None:
         bg_tasks.append(asyncio.create_task(abandoned_cart_task(bot)))
         bg_tasks.append(asyncio.create_task(daily_backup_task(bot)))
         bg_tasks.append(asyncio.create_task(subscription_lifecycle_task(bot)))
+        print(f"[startup] Polling started for @{BOT_USERNAME} — ready for /start!", flush=True)
         await dp.start_polling(bot)
 
     finally:
+        print("[shutdown] Shutting down bot...", flush=True)
         for task in bg_tasks:
             task.cancel()
             with suppress(asyncio.CancelledError):
@@ -11066,6 +11083,7 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
+        print("[shutdown] Stopped cleanly.", flush=True)
         logger.info("Stopped")
     except Exception:
         logger.exception("Fatal startup error")
