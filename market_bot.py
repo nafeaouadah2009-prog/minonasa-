@@ -13,19 +13,27 @@ import asyncio
 import csv
 import html
 import io
+import json
 import logging
 import math
 import os
 import re
+import secrets
 import sqlite3
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Final, Optional
 
 import qrcode
-from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
+from aiogram import Bot, Dispatcher, F, Router
+try:
+    from aiogram import BaseMiddleware
+except ImportError:
+    from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
@@ -43,7 +51,9 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InputMediaPhoto,
     KeyboardButton,
+    LabeledPrice,
     Message,
+    PreCheckoutQuery,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
     TelegramObject,
@@ -101,9 +111,15 @@ SUPPORT_CONTACT: Final[str] = "@YourUsername"
 DB_URL: Final[str] = f"sqlite+aiosqlite:///{DB_PATH}"
 
 ITEMS_PER_PAGE: Final[int] = 5
+MAX_STORES_FREE: Final[int] = 1
+MAX_STORES_PRO: Final[int] = 2
 MAX_STORES_PER_USER: Final[int] = 3
 MAX_STORES_VIP: Final[int] = 5
+MAX_PRODUCTS_FREE: Final[int] = 15
+MAX_PRODUCTS_PRO: Final[int] = 50
 MAX_PRODUCT_PHOTOS: Final[int] = 3
+SUB_GRACE_HOURS: Final[int] = 48
+TRIAL_DAYS: Final[int] = 7
 
 AD_PACKAGES: Final[dict[str, dict[str, Any]]] = {
     "basic": {"days": 3, "price": 1000.0, "label": "أساسية (3 أيام)"},
@@ -112,8 +128,9 @@ AD_PACKAGES: Final[dict[str, dict[str, Any]]] = {
 }
 
 VIP_PLANS: Final[dict[str, dict[str, Any]]] = {
-    "vip_30": {"days": 30, "price": 3000.0, "label": "👑 باقة VIP شهرية (30 يوم) - 3000 دج"},
-    "vip_90": {"days": 90, "price": 7500.0, "label": "👑 باقة VIP ربع سنوية (90 يوم) - 7500 دج"},
+    "pro_30": {"tier": "pro", "days": 30, "price": 1500.0, "bonus": 0.0, "label": "⭐ باقة Pro شهرية (30 يوم)"},
+    "vip_30": {"tier": "vip", "days": 30, "price": 3000.0, "bonus": 500.0, "label": "👑 باقة VIP شهرية (30 يوم)"},
+    "vip_90": {"tier": "vip", "days": 90, "price": 7500.0, "bonus": 1500.0, "label": "👑 باقة VIP ربع سنوية (90 يوم)"},
 }
 
 ALGERIA_WILAYAS: Final[dict[str, str]] = {
@@ -583,6 +600,16 @@ TEXTS: dict[str, dict[str, str]] = {
         "bl_added": "✅ تمت الإضافة إلى القائمة السوداء بنجاح.",
         "bl_removed": "✅ تمت إزالة الحظر بنجاح.",
         "bl_check_prompt": "🔎 أرسل معرّف تيليجرام (ID) أو رقم الهاتف لفحص سجل المشتري وموثوقيته:",
+        "btn_admin_paymethods": "💳 طرق الدفع والبوابات",
+        "btn_admin_vouchers": "🎟️ أكواد الشحن",
+        "btn_admin_plans": "👑 الباقات وكوبوناتها",
+        "btn_wallet_voucher": "🎟️ شحن بكود بطاقة",
+        "btn_wallet_history": "📜 سجل المعاملات",
+        "btn_wallet_stars": "⭐ شحن بنجوم تيليجرام",
+        "btn_pay_chargily": "⚡ دفع فوري EDAHABIA / CIB",
+        "btn_store_deposit": "💵 إعدادات العربون (COD)",
+        "btn_store_plans": "👑 باقات الاشتراك (Pro / VIP)",
+        "dup_receipt_err": "⚠️ <b>تم استخدام صورة هذا الإيصال مسبقاً!</b>\nيرجى إرسال صورة إيصال دفع جديد وصالح.",
     },
     "en": {
         "choose_lang": "🌐 Choose your language:",
@@ -945,6 +972,16 @@ TEXTS: dict[str, dict[str, str]] = {
         "bl_added": "✅ Added to blacklist successfully.",
         "bl_removed": "✅ Entry removed from blacklist.",
         "bl_check_prompt": "🔎 Send a Telegram ID or phone number to inspect buyer history & trust:",
+        "btn_admin_paymethods": "💳 Payment Methods",
+        "btn_admin_vouchers": "🎟️ Recharge Vouchers",
+        "btn_admin_plans": "👑 Plans & Coupons",
+        "btn_wallet_voucher": "🎟️ Redeem Voucher",
+        "btn_wallet_history": "📜 Transaction History",
+        "btn_wallet_stars": "⭐ Top-up with Telegram Stars",
+        "btn_pay_chargily": "⚡ Instant Pay (EDAHABIA / CIB)",
+        "btn_store_deposit": "💵 Deposit Settings (COD)",
+        "btn_store_plans": "👑 Subscription Plans (Pro/VIP)",
+        "dup_receipt_err": "⚠️ <b>This payment receipt was already submitted!</b>\nPlease send a new valid receipt screenshot.",
     },
     "fr": {
         "choose_lang": "🌐 Choisissez votre langue :",
@@ -1307,6 +1344,16 @@ TEXTS: dict[str, dict[str, str]] = {
         "bl_added": "✅ Ajouté à la liste noire avec succès.",
         "bl_removed": "✅ Retiré de la liste noire.",
         "bl_check_prompt": "🔎 Envoyez un ID Telegram ou un numéro de téléphone pour vérifier la fiabilité de l'acheteur :",
+        "btn_admin_paymethods": "💳 Moyens de paiement",
+        "btn_admin_vouchers": "🎟️ Codes de recharge",
+        "btn_admin_plans": "👑 Abonnements & Coupons",
+        "btn_wallet_voucher": "🎟️ Utiliser un code recharge",
+        "btn_wallet_history": "📜 Historique des transactions",
+        "btn_wallet_stars": "⭐ Recharger par Telegram Stars",
+        "btn_pay_chargily": "⚡ Paiement EDAHABIA / CIB",
+        "btn_store_deposit": "💵 Paramètres d'acompte (COD)",
+        "btn_store_plans": "👑 Forfaits (Pro / VIP)",
+        "dup_receipt_err": "⚠️ <b>Ce reçu de paiement a déjà été utilisé !</b>\nVeuillez envoyer une nouvelle capture de paiement valide.",
     },
 }
 
@@ -1389,6 +1436,14 @@ class Store(Base):
     verified: Mapped[bool] = mapped_column(Boolean, default=False)
     vip_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     auto_approve: Mapped[bool] = mapped_column(Boolean, default=False)
+    plan_tier: Mapped[str] = mapped_column(String(20), default="free")
+    plan_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    auto_renew: Mapped[bool] = mapped_column(Boolean, default=False)
+    trial_used: Mapped[bool] = mapped_column(Boolean, default=False)
+    expiry_reminded_3d: Mapped[bool] = mapped_column(Boolean, default=False)
+    expiry_reminded_1d: Mapped[bool] = mapped_column(Boolean, default=False)
+    deposit_threshold: Mapped[float] = mapped_column(Float, default=0.0)
+    deposit_amount: Mapped[float] = mapped_column(Float, default=0.0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     products = relationship("Product", back_populates="store", cascade="all, delete-orphan")
@@ -1505,6 +1560,7 @@ class Order(Base):
     quantity: Mapped[int] = mapped_column(Integer, default=1)
     delivery_type: Mapped[str] = mapped_column(String(20), default="home")
     tracking_info: Mapped[str] = mapped_column(String(300), default="")
+    deposit_proof: Mapped[str] = mapped_column(String(200), default="")
     price: Mapped[float] = mapped_column(Float)
     delivery_fee: Mapped[float] = mapped_column(Float, default=0.0)
     status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
@@ -1656,6 +1712,9 @@ class AdRequest(Base):
     package_name: Mapped[str] = mapped_column(String(50))
     price: Mapped[float] = mapped_column(Float)
     payment_proof: Mapped[str] = mapped_column(String(200), default="")
+    proof_unique_id: Mapped[str] = mapped_column(String(200), default="", index=True)
+    ref_code: Mapped[str] = mapped_column(String(40), default="", index=True)
+    external_id: Mapped[str] = mapped_column(String(120), default="", index=True)
     status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -1671,13 +1730,82 @@ class BlacklistedEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class PaymentMethod(Base):
+    __tablename__ = "payment_methods"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(80))
+    details: Mapped[str] = mapped_column(Text, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Voucher(Base):
+    __tablename__ = "vouchers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    amount: Mapped[float] = mapped_column(Float)
+    max_uses: Mapped[int] = mapped_column(Integer, default=1)
+    used_count: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[int] = mapped_column(BigInteger, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class VoucherRedemption(Base):
+    __tablename__ = "voucher_redemptions"
+    __table_args__ = (
+        UniqueConstraint("voucher_id", "user_tg_id", name="uq_voucher_user"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    voucher_id: Mapped[int] = mapped_column(ForeignKey("vouchers.id", ondelete="CASCADE"), index=True)
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    redeemed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class WalletTransaction(Base):
+    __tablename__ = "wallet_transactions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    tx_type: Mapped[str] = mapped_column(String(30), index=True)
+    amount: Mapped[float] = mapped_column(Float)
+    balance_after: Mapped[float] = mapped_column(Float, default=0.0)
+    description: Mapped[str] = mapped_column(String(300), default="")
+    ref_code: Mapped[str] = mapped_column(String(50), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class SubCoupon(Base):
+    __tablename__ = "sub_coupons"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    discount_percent: Mapped[int] = mapped_column(Integer)
+    max_uses: Mapped[int] = mapped_column(Integer, default=100)
+    used_count: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 async def _ensure_schema_columns(conn) -> None:
-    """Safely add new columns if upgrading an existing market_v10.db file."""
+    """Safely add new columns to existing tables BEFORE/AFTER create_all so upgrades never fail on new indexes."""
     migrations = [
         ("users", "saved_wilaya", "VARCHAR(60) DEFAULT ''"),
         ("stores", "default_desk_fee", "FLOAT DEFAULT 0.0"),
         ("stores", "vip_until", "DATETIME"),
         ("stores", "auto_approve", "BOOLEAN DEFAULT 0"),
+        ("stores", "plan_tier", "VARCHAR(20) DEFAULT 'free'"),
+        ("stores", "plan_expires_at", "DATETIME"),
+        ("stores", "auto_renew", "BOOLEAN DEFAULT 0"),
+        ("stores", "trial_used", "BOOLEAN DEFAULT 0"),
+        ("stores", "expiry_reminded_3d", "BOOLEAN DEFAULT 0"),
+        ("stores", "expiry_reminded_1d", "BOOLEAN DEFAULT 0"),
+        ("stores", "deposit_threshold", "FLOAT DEFAULT 0.0"),
+        ("stores", "deposit_amount", "FLOAT DEFAULT 0.0"),
         ("products", "is_deleted", "BOOLEAN DEFAULT 0"),
         ("cart_items", "quantity", "INTEGER DEFAULT 1"),
         ("orders", "store_id", "INTEGER"),
@@ -1687,13 +1815,29 @@ async def _ensure_schema_columns(conn) -> None:
         ("orders", "buyer_wilaya", "VARCHAR(60) DEFAULT ''"),
         ("orders", "delivery_type", "VARCHAR(20) DEFAULT 'home'"),
         ("orders", "tracking_info", "VARCHAR(300) DEFAULT ''"),
+        ("orders", "deposit_proof", "VARCHAR(200) DEFAULT ''"),
         ("ad_requests", "payment_proof", "VARCHAR(200) DEFAULT ''"),
+        ("ad_requests", "proof_unique_id", "VARCHAR(200) DEFAULT ''"),
+        ("ad_requests", "ref_code", "VARCHAR(40) DEFAULT ''"),
+        ("ad_requests", "external_id", "VARCHAR(120) DEFAULT ''"),
     ]
     for table, col, ddl in migrations:
         res = await conn.execute(sql_text(f"PRAGMA table_info({table})"))
-        cols = {row[1] for row in res.fetchall()}
+        rows = res.fetchall()
+        if not rows:
+            # Table does not exist yet; create_all will create it with all columns.
+            continue
+        cols = {row[1] for row in rows}
         if col not in cols:
             await conn.execute(sql_text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))
+    # Sync legacy vip_until into plan_tier/plan_expires_at on upgrade
+    with suppress(Exception):
+        await conn.execute(
+            sql_text(
+                "UPDATE stores SET plan_tier = 'vip', plan_expires_at = vip_until "
+                "WHERE vip_until IS NOT NULL AND (plan_expires_at IS NULL OR plan_tier = 'free')"
+            )
+        )
 
 
 async def init_db() -> async_sessionmaker:
@@ -1708,14 +1852,24 @@ async def init_db() -> async_sessionmaker:
     @event.listens_for(_engine.sync_engine, "connect")
     def _set_sqlite_pragma(dbapi_conn, _connection_record):
         cursor = dbapi_conn.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA synchronous=NORMAL")
-        cursor.execute("PRAGMA busy_timeout=5000")
-        cursor.execute("PRAGMA foreign_keys=ON")
+        for pragma in (
+            "PRAGMA journal_mode=WAL",
+            "PRAGMA synchronous=NORMAL",
+            "PRAGMA busy_timeout=5000",
+            "PRAGMA foreign_keys=ON",
+        ):
+            try:
+                cursor.execute(pragma)
+            except Exception:
+                pass
         cursor.close()
 
     async with _engine.begin() as conn:
+        # 1) Migrate missing columns on existing tables BEFORE create_all builds new indexes!
+        await _ensure_schema_columns(conn)
+        # 2) Create new tables and indexes cleanly
         await conn.run_sync(Base.metadata.create_all)
+        # 3) Safety pass
         await _ensure_schema_columns(conn)
 
     Session = async_sessionmaker(_engine, expire_on_commit=False)
@@ -1725,15 +1879,36 @@ async def init_db() -> async_sessionmaker:
 async def seed_categories(session_factory: async_sessionmaker) -> None:
     async with session_factory() as s:
         existing = (await s.execute(select(Category).limit(1))).scalar_one_or_none()
-        if existing:
-            return
-        s.add_all([
-            Category(name_ar="إلكترونيات", name_en="Electronics", name_fr="Électronique"),
-            Category(name_ar="أزياء", name_en="Fashion", name_fr="Mode"),
-            Category(name_ar="منزل", name_en="Home", name_fr="Maison"),
-            Category(name_ar="رياضة", name_en="Sports", name_fr="Sport"),
-            Category(name_ar="كتب", name_en="Books", name_fr="Livres"),
-        ])
+        if not existing:
+            s.add_all([
+                Category(name_ar="إلكترونيات", name_en="Electronics", name_fr="Électronique"),
+                Category(name_ar="أزياء", name_en="Fashion", name_fr="Mode"),
+                Category(name_ar="منزل", name_en="Home", name_fr="Maison"),
+                Category(name_ar="رياضة", name_en="Sports", name_fr="Sport"),
+                Category(name_ar="كتب", name_en="Books", name_fr="Livres"),
+            ])
+        pm_existing = (await s.execute(select(PaymentMethod).limit(1))).scalar_one_or_none()
+        if not pm_existing:
+            s.add_all([
+                PaymentMethod(
+                    name="BaridiMob (RIP)",
+                    details="RIP: 00799999000000000000\nأرسل المبلغ ثم أرفق صورة الوصل.",
+                    is_active=True,
+                    sort_order=1,
+                ),
+                PaymentMethod(
+                    name="CCP (بريد الجزائر)",
+                    details="الحساب: 00000000 المفتاح: 00\nالاسم: يحدده الأدمن من لوحة التحكم.",
+                    is_active=True,
+                    sort_order=2,
+                ),
+                PaymentMethod(
+                    name="USDT (TRC20)",
+                    details="العنوان: يحدده الأدمن من لوحة التحكم.",
+                    is_active=False,
+                    sort_order=3,
+                ),
+            ])
         await s.commit()
 
 
@@ -1883,6 +2058,43 @@ class AdminBlacklistFSM(StatesGroup):
     add_target = State()
     add_reason = State()
     check_target = State()
+
+
+class VoucherRedeemFSM(StatesGroup):
+    code = State()
+
+
+class AdminPayMethodFSM(StatesGroup):
+    add_name = State()
+    add_details = State()
+    edit_details = State()
+    chargily_key = State()
+    stars_rate = State()
+
+
+class AdminVoucherFSM(StatesGroup):
+    create_spec = State()
+
+
+class AdminPlanConfigFSM(StatesGroup):
+    set_value = State()
+
+
+class AdminSubCouponFSM(StatesGroup):
+    create_spec = State()
+
+
+class SubCouponApplyFSM(StatesGroup):
+    code = State()
+
+
+class StoreDepositFSM(StatesGroup):
+    threshold = State()
+    amount = State()
+
+
+class OrderDepositFSM(StatesGroup):
+    proof = State()
 
 
 class BroadcastFSM(StatesGroup):
@@ -2087,26 +2299,90 @@ def back_kb(lang: str, callback: str = "menu:home") -> InlineKeyboardMarkup:
     )
 
 
+def _store_expiry_dt(store: Optional[Store]) -> Optional[datetime]:
+    if not store:
+        return None
+    if store.plan_expires_at:
+        return store.plan_expires_at
+    return store.vip_until
+
+
+def effective_store_tier(store: Optional[Store], include_grace: bool = True) -> str:
+    """Return active tier ('vip', 'pro', or 'free'), respecting the 48h grace period."""
+    if not store:
+        return "free"
+    now = utcnow()
+    grace = timedelta(hours=SUB_GRACE_HOURS) if include_grace else timedelta(0)
+    exp = _store_expiry_dt(store)
+    tier = (store.plan_tier or "free").lower()
+    if exp and (exp + grace) > now:
+        if tier in ("vip", "pro"):
+            return tier
+        if store.vip_until and (store.vip_until + grace) > now:
+            return "vip"
+    return "free"
+
+
+def store_in_grace_period(store: Optional[Store]) -> bool:
+    if not store:
+        return False
+    exp = _store_expiry_dt(store)
+    now = utcnow()
+    return bool(exp and exp <= now < (exp + timedelta(hours=SUB_GRACE_HOURS)) and (store.plan_tier in ("pro", "vip") or store.vip_until))
+
+
 def is_store_vip(store: Optional[Store]) -> bool:
-    return bool(store and store.vip_until and store.vip_until > utcnow())
+    return effective_store_tier(store) == "vip"
+
+
+def is_store_pro_or_vip(store: Optional[Store]) -> bool:
+    return effective_store_tier(store) in ("pro", "vip")
+
+
+def store_can_auto_approve(store: Optional[Store]) -> bool:
+    return bool(store and (store.auto_approve or is_store_pro_or_vip(store)))
+
+
+def store_max_products(store: Optional[Store]) -> Optional[int]:
+    """Return max allowed products for store tier, or None for unlimited (VIP)."""
+    tier = effective_store_tier(store)
+    if tier == "vip":
+        return None
+    if tier == "pro":
+        return MAX_PRODUCTS_PRO
+    return MAX_PRODUCTS_FREE
+
+
+def store_tier_label(store: Optional[Store], lang: str = "ar") -> str:
+    tier = effective_store_tier(store)
+    if tier == "vip":
+        return "👑 VIP"
+    if tier == "pro":
+        return "⭐ Pro"
+    return "🆓 Free"
 
 
 def store_badges(store: Optional[Store], lang: str) -> str:
     if not store:
         return ""
     parts = []
-    if is_store_vip(store):
+    tier = effective_store_tier(store)
+    if tier == "vip":
         parts.append("👑")
-    if store.verified or is_store_vip(store):
+    elif tier == "pro":
+        parts.append("⭐")
+    if store.verified or tier == "vip":
         parts.append(t(lang, "verified_badge"))
     return " ".join(parts)
 
 
 async def user_max_stores(tg_id: int) -> int:
     stores = await get_stores_by_owner(tg_id)
-    if any(is_store_vip(st) for st in stores):
+    if any(effective_store_tier(st) == "vip" for st in stores):
         return MAX_STORES_VIP
-    return MAX_STORES_PER_USER
+    if any(effective_store_tier(st) == "pro" for st in stores):
+        return MAX_STORES_PRO
+    return MAX_STORES_FREE
 
 
 async def get_setting(key: str, default: str = "") -> str:
@@ -2123,6 +2399,234 @@ async def set_setting(key: str, value: str) -> None:
         else:
             s.add(AppSetting(key=key, value=value))
         await s.commit()
+
+
+async def get_dynamic_plans(s=None) -> dict[str, dict[str, Any]]:
+    """Return subscription plans with admin-configured overrides from AppSetting."""
+    plans = {k: dict(v) for k, v in VIP_PLANS.items()}
+    keys = [f"plan_price_{k}" for k in plans] + [f"plan_bonus_{k}" for k in plans]
+    if s is not None:
+        rows = (await s.execute(select(AppSetting).where(AppSetting.key.in_(keys)))).scalars().all()
+    else:
+        async with Session() as s2:
+            rows = (await s2.execute(select(AppSetting).where(AppSetting.key.in_(keys)))).scalars().all()
+    kv = {r.key: r.value for r in rows}
+    for k, info in plans.items():
+        raw_p = kv.get(f"plan_price_{k}")
+        if raw_p:
+            with suppress(ValueError):
+                v = float(raw_p)
+                if v > 0:
+                    info["price"] = v
+        raw_b = kv.get(f"plan_bonus_{k}")
+        if raw_b is not None and raw_b != "":
+            with suppress(ValueError):
+                b = float(raw_b)
+                if b >= 0:
+                    info["bonus"] = b
+    return plans
+
+
+def generate_pay_ref() -> str:
+    return f"PAY-{secrets.token_hex(3).upper()}"
+
+
+async def is_duplicate_receipt(s, file_unique_id: str) -> bool:
+    if not file_unique_id:
+        return False
+    exists = (
+        await s.execute(
+            select(AdRequest.id)
+            .where(AdRequest.proof_unique_id == file_unique_id, AdRequest.status != "rejected")
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return exists is not None
+
+
+async def format_payment_instructions(s, lang: str, ref_code: str = "", amount: float = 0.0) -> str:
+    methods = (
+        await s.execute(
+            select(PaymentMethod)
+            .where(PaymentMethod.is_active.is_(True))
+            .order_by(PaymentMethod.sort_order.asc(), PaymentMethod.id.asc())
+        )
+    ).scalars().all()
+    lines = ["💳 <b>طرق الدفع المتاحة:</b>"]
+    if methods:
+        for idx, pm in enumerate(methods, 1):
+            lines.append(f"\n<b>{idx}) {esc(pm.name)}</b>\n{esc(pm.details)}")
+    else:
+        lines.append(t(lang, "ad_payment_instructions"))
+    if amount > 0:
+        lines.append(f"\n💰 <b>المبلغ المطلوب:</b> <code>{amount:g} {DEFAULT_CURRENCY}</code>")
+    if ref_code:
+        lines.append(f"🏷️ <b>الرمز المرجعي (اكتبه في الملاحظة إن أمكن):</b> <code>{esc(ref_code)}</code>")
+    lines.append("\n📸 بعد التحويل، أرسل <b>صورة وصل الدفع</b> هنا مباشرة.")
+    return "\n".join(lines)
+
+
+async def record_wallet_tx(
+    s,
+    user: User,
+    amount: float,
+    tx_type: str,
+    description: str,
+    ref_code: str = "",
+) -> WalletTransaction:
+    """Apply delta to user.ad_credits and insert an immutable WalletTransaction ledger entry."""
+    user.ad_credits = round(float(user.ad_credits or 0.0) + float(amount), 2)
+    tx = WalletTransaction(
+        user_tg_id=user.tg_id,
+        tx_type=tx_type,
+        amount=round(float(amount), 2),
+        balance_after=float(user.ad_credits),
+        description=description[:300],
+        ref_code=ref_code[:50],
+    )
+    s.add(tx)
+    return tx
+
+
+async def activate_store_plan(
+    s,
+    store: Store,
+    plan_key: str,
+    user: Optional[User] = None,
+) -> tuple[str, float, str]:
+    """Activate or extend a Pro/VIP plan on a store and credit any VIP ad bonus."""
+    plans = await get_dynamic_plans(s)
+    plan = plans.get(plan_key) or plans["vip_30"]
+    tier = str(plan.get("tier", "vip"))
+    days = int(plan.get("days", 30))
+    bonus = float(plan.get("bonus", 0.0))
+
+    now = utcnow()
+    current_exp = _store_expiry_dt(store)
+    base_dt = current_exp if (current_exp and current_exp > now and store.plan_tier == tier) else now
+    new_exp = base_dt + timedelta(days=days)
+
+    store.plan_tier = tier
+    store.plan_expires_at = new_exp
+    store.expiry_reminded_3d = False
+    store.expiry_reminded_1d = False
+    store.auto_approve = True
+    if tier == "vip":
+        store.vip_until = new_exp
+        store.verified = True
+    else:
+        if store.vip_until and store.vip_until <= now:
+            store.vip_until = None
+
+    bonus_awarded = 0.0
+    if bonus > 0:
+        target_user = user or await ensure_user(s, store.owner_tg_id, DEFAULT_LANG)
+        await record_wallet_tx(
+            s,
+            target_user,
+            bonus,
+            "bonus",
+            f"🎁 رصيد إعلانات هدية مع باقة {plan['label']} ({store.name})",
+        )
+        bonus_awarded = bonus
+
+    return new_exp.strftime("%Y-%m-%d"), bonus_awarded, tier
+
+
+# ─── Chargily Pay v2 (EDAHABIA / CIB) & Telegram Stars Helpers ───
+
+async def get_chargily_config() -> tuple[str, str]:
+    key = (await get_setting("chargily_api_key", "")).strip()
+    mode = (await get_setting("chargily_mode", "test")).strip().lower()
+    if mode not in ("test", "live"):
+        mode = "test"
+    return key, mode
+
+
+async def get_stars_config() -> tuple[bool, float]:
+    enabled = (await get_setting("stars_enabled", "0")).strip() == "1"
+    raw_rate = (await get_setting("stars_dzd_rate", "5")).strip()
+    try:
+        rate = float(raw_rate)
+        if rate <= 0:
+            rate = 5.0
+    except ValueError:
+        rate = 5.0
+    return enabled, rate
+
+
+def _chargily_base_url(mode: str) -> str:
+    return "https://pay.chargily.net/api/v2" if mode == "live" else "https://pay.chargily.net/test/api/v2"
+
+
+def _chargily_create_checkout_sync(api_key: str, mode: str, amount_dzd: float, description: str, metadata: dict) -> dict:
+    url = f"{_chargily_base_url(mode)}/checkouts"
+    payload = {
+        "amount": int(round(amount_dzd)),
+        "currency": "dzd",
+        "success_url": f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else "https://t.me",
+        "failure_url": f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else "https://t.me",
+        "description": description[:250],
+        "metadata": metadata,
+    }
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "MarketBot/1.0",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = ""
+        with suppress(Exception):
+            body = e.read().decode("utf-8", errors="ignore")[:300]
+        return {"error": f"HTTP {e.code}: {body}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _chargily_get_checkout_sync(api_key: str, mode: str, checkout_id: str) -> dict:
+    url = f"{_chargily_base_url(mode)}/checkouts/{checkout_id}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+            "User-Agent": "MarketBot/1.0",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = ""
+        with suppress(Exception):
+            body = e.read().decode("utf-8", errors="ignore")[:300]
+        return {"error": f"HTTP {e.code}: {body}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+async def chargily_create_checkout(amount_dzd: float, description: str, metadata: dict) -> dict:
+    api_key, mode = await get_chargily_config()
+    if not api_key:
+        return {"error": "Chargily API key not configured"}
+    return await asyncio.to_thread(_chargily_create_checkout_sync, api_key, mode, amount_dzd, description, metadata)
+
+
+async def chargily_verify_checkout(checkout_id: str) -> dict:
+    api_key, mode = await get_chargily_config()
+    if not api_key:
+        return {"error": "Chargily API key not configured"}
+    return await asyncio.to_thread(_chargily_get_checkout_sync, api_key, mode, checkout_id)
 
 
 async def calculate_delivery_fee(
@@ -2849,18 +3353,23 @@ async def send_store_dashboard(msg_obj, store_id: int, lang: str):
         rating = await get_store_rating(store.id, s)
         total_stores = (await s.execute(select(func.count(Store.id)).where(Store.owner_tg_id == store.owner_tg_id))).scalar()
         credits = float(u.ad_credits or 0.0)
-    vip_active = is_store_vip(store)
-    max_allowed = MAX_STORES_VIP if vip_active else MAX_STORES_PER_USER
+    tier = effective_store_tier(store)
+    max_allowed = await user_max_stores(store.owner_tg_id)
+    max_prods = store_max_products(store)
+    prod_quota = f"{pcount}/{max_prods}" if max_prods is not None else f"{pcount}/∞"
     badge = store_badges(store, lang)
-    vip_line = ""
-    if vip_active:
-        vip_line = f"\n👑 <b>متجر VIP نشط حتى:</b> {store.vip_until.strftime('%Y-%m-%d')} (نشر مباشر ✅)"
+    exp = _store_expiry_dt(store)
+    tier_line = f"\n🏷️ <b>الباقة:</b> {store_tier_label(store, lang)} | 📦 المنتجات: <b>{prod_quota}</b>"
+    if tier in ("pro", "vip") and exp:
+        grace_tag = " (⏳ فترة سماح 48 ساعة)" if store_in_grace_period(store) else ""
+        ar_tag = " | ♻️ تجديد تلقائي" if store.auto_renew else ""
+        tier_line += f"\n📅 <b>صالح حتى:</b> {exp.strftime('%Y-%m-%d')}{grace_tag}{ar_tag}"
     elif store.auto_approve:
-        vip_line = "\n⚡ <b>النشر المباشر مفعّل</b>"
+        tier_line += "\n⚡ <b>النشر المباشر مفعّل</b>"
     text = (
         t(lang, "store_welcome", name=esc(store.name), badge=badge, products=pcount, views=vcount, followers=fcount, rating=rating)
         + f"\n💳 <b>رصيد المحفظة:</b> {credits:g} {DEFAULT_CURRENCY}"
-        + vip_line
+        + tier_line
     )
     kb = [
         [InlineKeyboardButton(text=t(lang, "btn_add_product"), callback_data=f"st_add:{store.id}")],
@@ -2869,7 +3378,7 @@ async def send_store_dashboard(msg_obj, store_id: int, lang: str):
         [InlineKeyboardButton(text=t(lang, "btn_flash_sale"), callback_data=f"st_flash:{store.id}"),
          InlineKeyboardButton(text=t(lang, "btn_promos"), callback_data=f"st_promos:{store.id}")],
         [InlineKeyboardButton(text=t(lang, "btn_buy_product_ad"), callback_data=f"st_buy_ad:{store.id}"),
-         InlineKeyboardButton(text=t(lang, "btn_vip_pkg"), callback_data=f"st_vip:{store.id}")],
+         InlineKeyboardButton(text=t(lang, "btn_store_plans"), callback_data=f"st_vip:{store.id}")],
         [InlineKeyboardButton(text=f"{t(lang, 'btn_wallet')} ({credits:g} {DEFAULT_CURRENCY})", callback_data=f"st_wallet:{store.id}"),
          InlineKeyboardButton(text=t(lang, "btn_my_stats"), callback_data=f"st_stats:{store.id}")],
         [InlineKeyboardButton(text=t(lang, "btn_share"), callback_data=f"st_share:{store.id}"),
@@ -2880,7 +3389,7 @@ async def send_store_dashboard(msg_obj, store_id: int, lang: str):
     if total_stores < max_allowed:
         kb.append([InlineKeyboardButton(text=t(lang, "add_new_store"), callback_data="nav:become_seller")])
     else:
-        kb.append([InlineKeyboardButton(text=f"⚠️ ({max_allowed})", callback_data="ignore")])
+        kb.append([InlineKeyboardButton(text=f"⚠️ الحد الأقصى للمتاجر ({max_allowed}) — رقّي باقتك", callback_data=f"st_vip:{store.id}")])
     kb.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="menu:home")])
     await msg_obj.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
@@ -2902,10 +3411,13 @@ async def _build_admin_panel_kb(lang: str) -> InlineKeyboardMarkup:
          InlineKeyboardButton(text=t(lang, "btn_global_stats"), callback_data="admin:gstats")],
         [InlineKeyboardButton(text=f"{t(lang, 'btn_manage_bot_ads')} ({bads})", callback_data="admin:botads"),
          InlineKeyboardButton(text=f"{t(lang, 'btn_manage_ad_requests')} ({adreqs})", callback_data="admin:adreqs")],
-        [InlineKeyboardButton(text=f"{t(lang, 'btn_admin_blacklist')} ({bl_cnt})", callback_data="admin:blacklist"),
-         InlineKeyboardButton(text=t(lang, "btn_admin_channel"), callback_data="admin:channel")],
-        [InlineKeyboardButton(text=t(lang, "btn_admin_backup"), callback_data="admin:backup"),
-         InlineKeyboardButton(text=t(lang, "btn_broadcast"), callback_data="admin:broadcast")],
+        [InlineKeyboardButton(text=t(lang, "btn_admin_paymethods"), callback_data="admin:paymethods"),
+         InlineKeyboardButton(text=t(lang, "btn_admin_vouchers"), callback_data="admin:vouchers")],
+        [InlineKeyboardButton(text=t(lang, "btn_admin_plans"), callback_data="admin:plans"),
+         InlineKeyboardButton(text=f"{t(lang, 'btn_admin_blacklist')} ({bl_cnt})", callback_data="admin:blacklist")],
+        [InlineKeyboardButton(text=t(lang, "btn_admin_channel"), callback_data="admin:channel"),
+         InlineKeyboardButton(text=t(lang, "btn_admin_backup"), callback_data="admin:backup")],
+        [InlineKeyboardButton(text=t(lang, "btn_broadcast"), callback_data="admin:broadcast")],
         [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="menu:home")],
     ])
 
@@ -3569,17 +4081,22 @@ async def view_wallet_for_user(target_msg: Message, uid: int, back_cb: str = "na
                 )
             )
         ).scalar() or 0
+    stars_enabled, _ = await get_stars_config()
     pending_line = f"\n⏳ طلبات شحن قيد المراجعة: <b>{pending_topups}</b>" if pending_topups else ""
     text = (
-        f"💳 <b>محفظتي (رصيد الترويج و VIP)</b>\n\n"
+        f"💳 <b>محفظتي (رصيد الترويج والاشتراكات)</b>\n\n"
         f"💰 الرصيد المتاح: <b>{bal:g} {DEFAULT_CURRENCY}</b>{pending_line}\n\n"
-        f"💡 يمكنك استخدام الرصيد لتفعيل إعلانات المنتجات وباقات VIP للمتاجر <b>بشكل فوري</b> دون انتظار مراجعة وصل الدفع!"
+        f"💡 يمكنك استخدام الرصيد لتفعيل إعلانات المنتجات وباقات <b>Pro / VIP</b> <b>بشكل فوري</b> أو للتجديد التلقائي!"
     )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
+    rows = [
         [InlineKeyboardButton(text="➕ شحن الرصيد الآن", callback_data="wallet:topup")],
-        [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=back_cb)],
-    ])
-    await target_msg.answer(text, reply_markup=kb)
+        [InlineKeyboardButton(text=t(lang, "btn_wallet_voucher"), callback_data="wallet:voucher")],
+    ]
+    if stars_enabled:
+        rows.append([InlineKeyboardButton(text=t(lang, "btn_wallet_stars"), callback_data="wallet:stars")])
+    rows.append([InlineKeyboardButton(text=t(lang, "btn_wallet_history"), callback_data="wallet:history")])
+    rows.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=back_cb)])
+    await target_msg.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 @buyer_router.callback_query(F.data == "wallet:topup")
@@ -3600,13 +4117,30 @@ async def wallet_topup_menu(cb: CallbackQuery, state: FSMContext):
     ])
     text = (
         "💳 <b>شحن المحفظة</b>\n\n"
-        "اختر المبلغ الذي تريد شحنه ثم أرسل صورة وصل الدفع (CCP / BaridiMob):"
+        "اختر المبلغ الذي تريد شحنه (يدعم التحويل اليدوي مع رمز مرجعي، والدفع الإلكتروني الفوري عند تفعيله):"
     )
     try:
         await cb.message.edit_text(text, reply_markup=kb)
     except Exception:
         await cb.message.answer(text, reply_markup=kb)
     await cb.answer()
+
+
+async def _send_topup_instructions(target_msg: Message, state: FSMContext, lang: str, amt: float):
+    ref_code = generate_pay_ref()
+    await state.update_data(topup_amount=amt, topup_ref=ref_code)
+    await state.set_state(WalletTopupFSM.proof)
+    async with Session() as s:
+        instr = await format_payment_instructions(s, lang, ref_code=ref_code, amount=amt)
+    chg_key, _ = await get_chargily_config()
+    rows = []
+    if chg_key:
+        rows.append([InlineKeyboardButton(text=t(lang, "btn_pay_chargily"), callback_data=f"chg_pay:wallet_topup:0:{int(round(amt))}")])
+    rows.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:wallet")])
+    await target_msg.answer(
+        f"💳 <b>شحن رصيد: {amt:g} {DEFAULT_CURRENCY}</b>\n\n{instr}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
 
 
 @buyer_router.callback_query(F.data.startswith("wallet:amt:"))
@@ -3618,12 +4152,7 @@ async def wallet_topup_amount_cb(cb: CallbackQuery, state: FSMContext):
         await cb.message.answer(f"✏️ أرسل المبلغ الذي تريد شحنه ({DEFAULT_CURRENCY}) — الحد الأدنى 500:")
         return await cb.answer()
     amt = float(val)
-    await state.update_data(topup_amount=amt)
-    await state.set_state(WalletTopupFSM.proof)
-    await cb.message.answer(
-        f"💳 <b>شحن رصيد: {amt:g} {DEFAULT_CURRENCY}</b>\n\n"
-        f"{t(lang, 'ad_payment_instructions', price=f'{amt:g}')}"
-    )
+    await _send_topup_instructions(cb.message, state, lang, amt)
     await cb.answer()
 
 
@@ -3636,12 +4165,7 @@ async def wallet_topup_custom_amount(message: Message, state: FSMContext):
             raise ValueError()
     except ValueError:
         return await message.answer("❌ يرجى إدخال مبلغ صحيح بين 500 و 1,000,000.")
-    await state.update_data(topup_amount=amt)
-    await state.set_state(WalletTopupFSM.proof)
-    await message.answer(
-        f"💳 <b>شحن رصيد: {amt:g} {DEFAULT_CURRENCY}</b>\n\n"
-        f"{t(lang, 'ad_payment_instructions', price=f'{amt:g}')}"
-    )
+    await _send_topup_instructions(message, state, lang, amt)
 
 
 @buyer_router.message(WalletTopupFSM.proof, F.photo)
@@ -3649,11 +4173,15 @@ async def wallet_topup_receive_proof(message: Message, state: FSMContext):
     lang = await get_lang(message.from_user.id)
     data = await state.get_data()
     amt = float(data.get("topup_amount", 0))
-    await state.clear()
+    ref_code = str(data.get("topup_ref") or generate_pay_ref())
     if amt <= 0:
+        await state.clear()
         return await message.answer(t(lang, "cancelled"), reply_markup=await get_main_kb(message.from_user.id, lang))
     photo_id = message.photo[-1].file_id
+    uniq_id = message.photo[-1].file_unique_id
     async with Session() as s:
+        if await is_duplicate_receipt(s, uniq_id):
+            return await message.answer(t(lang, "dup_receipt_err"))
         req = AdRequest(
             user_tg_id=message.from_user.id,
             ad_type="wallet_topup",
@@ -3661,14 +4189,18 @@ async def wallet_topup_receive_proof(message: Message, state: FSMContext):
             package_name=f"topup_{int(amt)}",
             price=amt,
             payment_proof=photo_id,
+            proof_unique_id=uniq_id,
+            ref_code=ref_code,
             status="pending",
         )
         s.add(req)
         await s.commit()
         await s.refresh(req)
         req_id = req.id
+    await state.clear()
     await message.answer(
         f"✅ <b>تم إرسال طلب شحن المحفظة (#{req_id}) بنجاح!</b>\n"
+        f"🏷️ الرمز المرجعي: <code>{esc(ref_code)}</code>\n"
         f"💰 المبلغ: <b>{amt:g} {DEFAULT_CURRENCY}</b>\n"
         f"⏳ سيتم إضافة الرصيد لمحفظتك فور تأكيد الإدارة للوصل.",
         reply_markup=await get_main_kb(message.from_user.id, lang),
@@ -3680,6 +4212,7 @@ async def wallet_topup_receive_proof(message: Message, state: FSMContext):
     await notify_admins(
         message.bot,
         f"💳 <b>طلب شحن محفظة جديد #{req_id}</b>\n"
+        f"🏷️ المرجع: <code>{esc(ref_code)}</code>\n"
         f"👤 المستخدم: {esc(message.from_user.full_name)} (<code>{message.from_user.id}</code>)\n"
         f"💰 المبلغ المطلوب: <b>{amt:g} {DEFAULT_CURRENCY}</b>",
         reply_markup=admin_kb,
@@ -3690,6 +4223,440 @@ async def wallet_topup_receive_proof(message: Message, state: FSMContext):
 @buyer_router.message(WalletTopupFSM.proof, ~F.photo)
 async def wallet_topup_proof_invalid(message: Message):
     await message.answer("📸 يرجى إرسال صورة وصل الدفع (أو /cancel للإلغاء).")
+
+
+# ─── Prepaid Recharge Vouchers (Gift Cards) ───
+
+@buyer_router.callback_query(F.data == "wallet:voucher")
+async def wallet_voucher_prompt(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(VoucherRedeemFSM.code)
+    await cb.message.answer("🎟️ <b>شحن بكود بطاقة مسبقة الدفع</b>\n\nأرسل كود البطاقة الآن (أو /cancel للإلغاء):")
+    await cb.answer()
+
+
+@buyer_router.message(VoucherRedeemFSM.code)
+async def wallet_voucher_redeem(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    lang = await get_lang(uid)
+    code = (message.text or "").strip().upper()
+    if not code or len(code) > 50:
+        return await message.answer("❌ كود غير صالح. أعد إدخال الكود أو أرسل /cancel:")
+    async with Session() as s:
+        v = (await s.execute(select(Voucher).where(Voucher.code == code))).scalar_one_or_none()
+        if not v or not v.is_active or v.used_count >= v.max_uses:
+            return await message.answer("❌ الكود غير صحيح أو منتهي الصلاحية أو مستنفد الاستخدام.")
+        already = (
+            await s.execute(
+                select(VoucherRedemption.id).where(
+                    VoucherRedemption.voucher_id == v.id,
+                    VoucherRedemption.user_tg_id == uid,
+                )
+            )
+        ).scalar_one_or_none()
+        if already:
+            return await message.answer("⚠️ لقد استخدمت هذا الكود مسبقاً!")
+        u = await ensure_user(s, uid, lang)
+        v.used_count += 1
+        if v.used_count >= v.max_uses:
+            v.is_active = False
+        s.add(VoucherRedemption(voucher_id=v.id, user_tg_id=uid))
+        await record_wallet_tx(
+            s,
+            u,
+            v.amount,
+            "voucher",
+            f"🎟️ شحن عبر بطاقة كود {v.code}",
+            ref_code=v.code,
+        )
+        new_bal = float(u.ad_credits or 0.0)
+        v_amt = float(v.amount)
+        await s.commit()
+    await state.clear()
+    await message.answer(
+        f"🎉 <b>تم شحن محفظتك بنجاح!</b>\n\n"
+        f"🎟️ الكود: <code>{esc(code)}</code>\n"
+        f"➕ المبلغ المضاف: <b>+{v_amt:g} {DEFAULT_CURRENCY}</b>\n"
+        f"💰 رصيدك الحالي: <b>{new_bal:g} {DEFAULT_CURRENCY}</b>",
+        reply_markup=await get_main_kb(uid, lang),
+    )
+
+
+# ─── Wallet Transaction History (Ledger) ───
+
+async def _render_wallet_history(msg_obj: Message, uid: int, page: int, edit: bool = True):
+    lang = await get_lang(uid)
+    per_page = 8
+    async with Session() as s:
+        total = (
+            await s.execute(select(func.count(WalletTransaction.id)).where(WalletTransaction.user_tg_id == uid))
+        ).scalar() or 0
+        total_pages = max(1, math.ceil(total / per_page))
+        page = max(1, min(page, total_pages))
+        rows = (
+            await s.execute(
+                select(WalletTransaction)
+                .where(WalletTransaction.user_tg_id == uid)
+                .order_by(WalletTransaction.id.desc())
+                .offset((page - 1) * per_page)
+                .limit(per_page)
+            )
+        ).scalars().all()
+    icons = {
+        "topup": "💳",
+        "voucher": "🎟️",
+        "stars": "⭐",
+        "chargily": "⚡",
+        "subscription": "👑",
+        "ad": "📢",
+        "bonus": "🎁",
+        "refund": "↩️",
+    }
+    if not rows:
+        text = "📜 <b>سجل معاملات المحفظة</b>\n\nلا توجد معاملات مسجلة بعد."
+    else:
+        lines = [f"📜 <b>سجل معاملات المحفظة</b> (صفحة {page}/{total_pages} — إجمالي {total}):\n"]
+        for tx in rows:
+            ic = icons.get(tx.tx_type, "💰")
+            sign = "+" if tx.amount >= 0 else ""
+            dt_str = tx.created_at.strftime("%Y-%m-%d %H:%M") if tx.created_at else ""
+            ref_str = f" | <code>{esc(tx.ref_code)}</code>" if tx.ref_code else ""
+            lines.append(
+                f"{ic} <b>{sign}{tx.amount:g} {DEFAULT_CURRENCY}</b> → الرصيد: {tx.balance_after:g}\n"
+                f"   {esc(tx.description)}{ref_str}\n"
+                f"   <i>{dt_str}</i>"
+            )
+        text = "\n".join(lines)
+    kb = []
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text=t(lang, "btn_prev"), callback_data=f"wallet:hist_pg:{page - 1}"))
+    if total_pages > 1:
+        nav.append(InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="ignore"))
+    if page < total_pages:
+        nav.append(InlineKeyboardButton(text=t(lang, "btn_next"), callback_data=f"wallet:hist_pg:{page + 1}"))
+    if nav:
+        kb.append(nav)
+    kb.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:wallet")])
+    markup = InlineKeyboardMarkup(inline_keyboard=kb)
+    if edit:
+        try:
+            await msg_obj.edit_text(text[:4000], reply_markup=markup)
+            return
+        except Exception:
+            pass
+    await msg_obj.answer(text[:4000], reply_markup=markup)
+
+
+@buyer_router.callback_query(F.data == "wallet:history")
+async def wallet_history_cb(cb: CallbackQuery):
+    await _render_wallet_history(cb.message, cb.from_user.id, 1, edit=True)
+    await cb.answer()
+
+
+@buyer_router.callback_query(F.data.startswith("wallet:hist_pg:"))
+async def wallet_history_page_cb(cb: CallbackQuery):
+    page = int(cb.data.split(":")[2])
+    await _render_wallet_history(cb.message, cb.from_user.id, page, edit=True)
+    await cb.answer()
+
+
+# ─── Telegram Stars (XTR) Native In-App Top-Up ───
+
+@buyer_router.callback_query(F.data == "wallet:stars")
+async def wallet_stars_menu(cb: CallbackQuery):
+    lang = await get_lang(cb.from_user.id)
+    enabled, rate = await get_stars_config()
+    if not enabled:
+        return await cb.answer("⭐ شحن نجوم تيليجرام غير مفعّل حالياً.", show_alert=True)
+    packs = [50, 100, 250, 500, 1000]
+    rows = []
+    for st_cnt in packs:
+        dzd = int(round(st_cnt * rate))
+        rows.append([
+            InlineKeyboardButton(
+                text=f"⭐ {st_cnt} Stars → {dzd:g} {DEFAULT_CURRENCY}",
+                callback_data=f"wallet:stars_buy:{st_cnt}",
+            )
+        ])
+    rows.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:wallet")])
+    text = (
+        f"⭐ <b>شحن المحفظة بنجوم تيليجرام (Telegram Stars)</b>\n\n"
+        f"💱 سعر الصرف الحالي: <b>1 ⭐ = {rate:g} {DEFAULT_CURRENCY}</b>\n"
+        f"⚡ يتم شحن الرصيد في محفظتك <b>فوراً وتلقائياً</b> بعد الدفع!"
+    )
+    try:
+        await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    except Exception:
+        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await cb.answer()
+
+
+@buyer_router.callback_query(F.data.startswith("wallet:stars_buy:"))
+async def wallet_stars_send_invoice(cb: CallbackQuery):
+    enabled, rate = await get_stars_config()
+    if not enabled:
+        return await cb.answer("⭐ غير مفعّل حالياً.", show_alert=True)
+    stars = int(cb.data.split(":")[2])
+    if stars < 1 or stars > 50000:
+        return await cb.answer("❌ باقة غير صالحة.", show_alert=True)
+    dzd = int(round(stars * rate))
+    payload = f"stars_topup:{cb.from_user.id}:{stars}:{dzd}"
+    try:
+        await cb.message.answer_invoice(
+            title=f"شحن المحفظة ({dzd} {DEFAULT_CURRENCY})",
+            description=f"شحن فوري لرصيد محفظة Market Bot بقيمة {dzd} {DEFAULT_CURRENCY} مقابل {stars} نجمة تيليجرام.",
+            payload=payload,
+            provider_token="",
+            currency="XTR",
+            prices=[LabeledPrice(label=f"{dzd} {DEFAULT_CURRENCY}", amount=stars)],
+        )
+    except Exception as e:
+        logger.warning(f"Stars invoice error: {e}")
+        return await cb.answer("❌ تعذّر إنشاء فاتورة النجوم.", show_alert=True)
+    await cb.answer()
+
+
+@buyer_router.pre_checkout_query()
+async def stars_pre_checkout(pre_checkout_query: PreCheckoutQuery):
+    await pre_checkout_query.answer(ok=True)
+
+
+@buyer_router.message(F.successful_payment)
+async def stars_successful_payment(message: Message):
+    sp = message.successful_payment
+    if not sp or sp.currency != "XTR":
+        return
+    uid = message.from_user.id
+    lang = await get_lang(uid)
+    payload = sp.invoice_payload or ""
+    parts = payload.split(":")
+    if len(parts) < 4 or parts[0] != "stars_topup":
+        return
+    stars = int(sp.total_amount or 0)
+    _, rate = await get_stars_config()
+    dzd_amt = round(stars * rate, 2)
+    charge_id = (sp.telegram_payment_charge_id or f"XTR-{int(time.time())}")[:50]
+    async with Session() as s:
+        dup = (
+            await s.execute(select(WalletTransaction.id).where(WalletTransaction.ref_code == charge_id).limit(1))
+        ).scalar_one_or_none()
+        if dup:
+            return
+        u = await ensure_user(s, uid, lang)
+        await record_wallet_tx(
+            s,
+            u,
+            dzd_amt,
+            "stars",
+            f"⭐ شحن تلقائي عبر {stars} Telegram Stars",
+            ref_code=charge_id,
+        )
+        new_bal = float(u.ad_credits or 0.0)
+        await s.commit()
+    await message.answer(
+        f"⭐ <b>تم الدفع بنجوم تيليجرام وشحن محفظتك فوراً!</b>\n\n"
+        f"➕ المبلغ المضاف: <b>+{dzd_amt:g} {DEFAULT_CURRENCY}</b> ({stars} ⭐)\n"
+        f"💰 رصيدك الحالي: <b>{new_bal:g} {DEFAULT_CURRENCY}</b>",
+        reply_markup=await get_main_kb(uid, lang),
+    )
+    await notify_admins(
+        message.bot,
+        f"⭐ <b>شحن فوري بنجوم تيليجرام</b>\n"
+        f"👤 المستخدم: <code>{uid}</code>\n"
+        f"⭐ النجوم: <b>{stars}</b> → <b>{dzd_amt:g} {DEFAULT_CURRENCY}</b>",
+    )
+
+
+# ─── Chargily Pay v2 (EDAHABIA / CIB) Instant Checkout & Verify ───
+
+@buyer_router.callback_query(F.data.startswith("chg_pay:"))
+async def chargily_start_checkout(cb: CallbackQuery, state: FSMContext):
+    parts = cb.data.split(":")
+    if len(parts) < 4:
+        return await cb.answer("❌ طلب غير صالح.", show_alert=True)
+    ad_type, target_id_str, extra = parts[1], parts[2], parts[3]
+    target_id = int(target_id_str)
+    uid = cb.from_user.id
+    lang = await get_lang(uid)
+
+    chg_key, chg_mode = await get_chargily_config()
+    if not chg_key:
+        return await cb.answer("⚠️ بوابة Chargily Pay غير مفعّلة حالياً.", show_alert=True)
+
+    amount = 0.0
+    desc = "Market Bot Payment"
+    pkg_name = extra
+    if ad_type == "wallet_topup":
+        amount = float(extra)
+        pkg_name = f"topup_{int(round(amount))}"
+        desc = f"Wallet Top-up {int(round(amount))} DZD (User {uid})"
+    elif ad_type == "store_vip":
+        if not await is_store_owner(uid, target_id):
+            return await cb.answer("⛔ غير مصرح.", show_alert=True)
+        plans = await get_dynamic_plans()
+        plan = plans.get(extra)
+        if not plan:
+            return await cb.answer("❌ باقة غير صالحة.", show_alert=True)
+        amount = float(plan["price"])
+        st_data = await state.get_data()
+        disc = int(st_data.get("sub_coupon_pct", 0) or 0)
+        if 1 <= disc <= 95:
+            amount = max(100.0, round(amount * (1.0 - disc / 100.0), 2))
+        desc = f"Store #{target_id} Subscription {plan['label']}"
+    elif ad_type == "product":
+        if not await is_product_owner(uid, target_id):
+            return await cb.answer("⛔ غير مصرح.", show_alert=True)
+        pkg = AD_PACKAGES.get(extra)
+        if not pkg:
+            return await cb.answer("❌ باقة غير صالحة.", show_alert=True)
+        amount = float(pkg["price"])
+        desc = f"Featured Product #{target_id} ({pkg['label']})"
+    else:
+        return await cb.answer("❌ نوع غير مدعوم.", show_alert=True)
+
+    if amount < 75:
+        return await cb.answer("⚠️ الحد الأدنى للدفع عبر Chargily هو 75 دج.", show_alert=True)
+
+    ref_code = generate_pay_ref()
+    resp = await chargily_create_checkout(
+        amount_dzd=amount,
+        description=desc,
+        metadata={"user_id": uid, "ad_type": ad_type, "target_id": target_id, "pkg": pkg_name, "ref": ref_code},
+    )
+    checkout_url = resp.get("checkout_url")
+    checkout_id = resp.get("id")
+    if not checkout_url or not checkout_id:
+        err = esc(str(resp.get("error") or resp)[:200])
+        return await cb.message.answer(f"❌ تعذّر إنشاء رابط الدفع عبر Chargily:\n<code>{err}</code>")
+
+    async with Session() as s:
+        req = AdRequest(
+            user_tg_id=uid,
+            ad_type=ad_type,
+            target_id=target_id,
+            package_name=pkg_name,
+            price=amount,
+            payment_proof="",
+            ref_code=ref_code,
+            external_id=str(checkout_id),
+            status="pending",
+        )
+        s.add(req)
+        await s.commit()
+        await s.refresh(req)
+        req_id = req.id
+
+    await state.clear()
+    mode_tag = "🧪 وضع تجريبي (Test)" if chg_mode == "test" else "🟢 وضع مباشر (Live)"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔗 ادفع الآن (EDAHABIA / CIB)", url=checkout_url)],
+        [InlineKeyboardButton(text="✅ تحقّق من الدفع وتفعيل فوري", callback_data=f"chg_verify:{req_id}")],
+        [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:wallet")],
+    ])
+    await cb.message.answer(
+        f"⚡ <b>فاتورة Chargily Pay جاهزة!</b> ({mode_tag})\n\n"
+        f"🏷️ المرجع: <code>{esc(ref_code)}</code>\n"
+        f"💰 المبلغ: <b>{amount:g} {DEFAULT_CURRENCY}</b>\n\n"
+        f"1️⃣ اضغط على <b>«ادفع الآن»</b> وأكمل الدفع ببطاقة الذهبية أو CIB.\n"
+        f"2️⃣ عُد هنا واضغط <b>«تحقّق من الدفع وتفعيل فوري»</b> لتفعيل طلبك تلقائياً خلال ثوانٍ!",
+        reply_markup=kb,
+    )
+    await cb.answer()
+
+
+@buyer_router.callback_query(F.data.startswith("chg_verify:"))
+async def chargily_verify_cb(cb: CallbackQuery):
+    req_id = int(cb.data.split(":")[1])
+    uid = cb.from_user.id
+    lang = await get_lang(uid)
+
+    async with Session() as s:
+        req = await s.get(AdRequest, req_id)
+        if not req:
+            return await cb.answer("❌ الفاتورة غير موجودة.", show_alert=True)
+        if req.user_tg_id != uid and uid not in ADMIN_IDS:
+            return await cb.answer("⛔ غير مصرح.", show_alert=True)
+        if req.status == "approved":
+            return await cb.answer("✅ تم تفعيل هذه الفاتورة مسبقاً!", show_alert=True)
+        if req.status != "pending" or not req.external_id:
+            return await cb.answer("⚠️ هذه الفاتورة غير صالحة للتحقق.", show_alert=True)
+        ext_id = req.external_id
+
+    data = await chargily_verify_checkout(ext_id)
+    if data.get("error"):
+        return await cb.answer("⚠️ تعذّر الاتصال بـ Chargily حالياً، حاول بعد لحظات.", show_alert=True)
+
+    status = str(data.get("status", "")).lower()
+    if status != "paid":
+        if status in ("failed", "canceled", "expired"):
+            async with Session() as s:
+                req = await s.get(AdRequest, req_id)
+                if req and req.status == "pending":
+                    req.status = "rejected"
+                    await s.commit()
+            return await cb.answer(f"❌ حالة الفاتورة: {status}. يرجى إنشاء فاتورة جديدة.", show_alert=True)
+        return await cb.answer("⏳ لم يتم تأكيد الدفع بعد. أكمل الدفع في الرابط ثم اضغط تحقق مجدداً.", show_alert=True)
+
+    # Paid! Atomically fulfill
+    msg_out = ""
+    async with Session() as s:
+        res = await s.execute(
+            update(AdRequest)
+            .where(AdRequest.id == req_id, AdRequest.status == "pending")
+            .values(status="approved")
+        )
+        if res.rowcount == 0:
+            return await cb.answer("✅ تم تفعيل هذه الفاتورة مسبقاً!", show_alert=True)
+        req = await s.get(AdRequest, req_id)
+        u = await ensure_user(s, req.user_tg_id, lang)
+
+        if req.ad_type == "wallet_topup":
+            await record_wallet_tx(
+                s,
+                u,
+                req.price,
+                "chargily",
+                f"⚡ شحن فوري عبر Chargily Pay ({req.ref_code})",
+                ref_code=req.ref_code,
+            )
+            msg_out = (
+                f"⚡ <b>تم التحقق من الدفع وشحن محفظتك فوراً!</b>\n\n"
+                f"➕ المبلغ المضاف: <b>+{req.price:g} {DEFAULT_CURRENCY}</b>\n"
+                f"💰 رصيدك الحالي: <b>{float(u.ad_credits or 0):g} {DEFAULT_CURRENCY}</b>"
+            )
+        elif req.ad_type == "store_vip":
+            st = await s.get(Store, req.target_id)
+            if st:
+                until_str, bonus, tier = await activate_store_plan(s, st, req.package_name, user=u)
+                b_line = f"\n🎁 تم إضافة رصيد هدية: <b>+{bonus:g} {DEFAULT_CURRENCY}</b>" if bonus > 0 else ""
+                msg_out = (
+                    f"⚡ <b>تم الدفع وتفعيل اشتراك {tier.upper()} لمتجر {esc(st.name)} فوراً!</b>\n"
+                    f"📅 صالح حتى: <b>{until_str}</b>{b_line}"
+                )
+        elif req.ad_type == "product":
+            pkg = AD_PACKAGES.get(req.package_name, AD_PACKAGES["basic"])
+            days = int(pkg["days"])
+            prod = await s.get(Product, req.target_id)
+            if prod and not prod.is_deleted:
+                now = utcnow()
+                base = prod.featured_until if (prod.featured_until and prod.featured_until > now) else now
+                prod.featured_until = base + timedelta(days=days)
+                msg_out = (
+                    f"⚡ <b>تم الدفع وتمييز منتجك {esc(prod.title)} فوراً!</b>\n"
+                    f"📅 مميز حتى: <b>{prod.featured_until.strftime('%Y-%m-%d')}</b>"
+                )
+        await s.commit()
+
+    with suppress(Exception):
+        await cb.message.edit_text(msg_out or "✅ تم التفعيل بنجاح!", reply_markup=back_kb(lang, "menu:home"))
+    await notify_admins(
+        cb.bot,
+        f"⚡ <b>دفع إلكتروني مؤكد عبر Chargily Pay</b>\n"
+        f"👤 المستخدم: <code>{req.user_tg_id}</code>\n"
+        f"📦 النوع: <b>{esc(req.ad_type)}</b> ({esc(req.package_name)})\n"
+        f"💰 المبلغ: <b>{req.price:g} {DEFAULT_CURRENCY}</b> | <code>{esc(req.ref_code)}</code>",
+    )
+    await cb.answer("✅ تم التحقق والتفعيل الفوري!", show_alert=True)
 
 
 # ─── Support Tickets ───
@@ -4515,6 +5482,7 @@ async def process_checkout(message_obj, user_id: int, state: FSMContext, promo_c
         orders_created = 0
         failed_titles: list[str] = []
         seller_notifications: list[tuple[int, str]] = []
+        deposit_prompts: list[tuple[int, str, float, str]] = []
         total_charged = 0.0
         total_delivery = 0.0
         dtype_label = "🏢 مكتب التوصيل (Stop Desk)" if delivery_type == "desk" else "🏠 باب المنزل"
@@ -4565,9 +5533,17 @@ async def process_checkout(message_obj, user_id: int, state: FSMContext, promo_c
                     delivery_fee=computed_delivery,
                 )
                 s.add(order)
+                await s.flush()
                 orders_created += 1
                 total_charged += final_price
                 total_delivery += computed_delivery
+
+                order_total = final_price + computed_delivery
+                if float(store.deposit_amount or 0.0) > 0 and (
+                    float(store.deposit_threshold or 0.0) <= 0 or order_total >= float(store.deposit_threshold or 0.0)
+                ):
+                    contact_hint = store.contact_phone or store.contact or ""
+                    deposit_prompts.append((order.id, store.name, float(store.deposit_amount), contact_hint))
 
                 sl = await get_lang(store.owner_tg_id)
                 trust_badge, _trust_info = await get_buyer_trust_summary(s, user_id, phone, sl)
@@ -4624,6 +5600,73 @@ async def process_checkout(message_obj, user_id: int, state: FSMContext, promo_c
             f"\n🧾 الإجمالي الكلي: <b>{total_charged + total_delivery:.2f} {DEFAULT_CURRENCY}</b>"
         )
         await message_obj.answer(t(lang, "order_success") + promo_note + summary, reply_markup=await get_main_kb(user_id, lang))
+
+    if deposit_prompts:
+        oid, sname, dep_amt, contact_hint = deposit_prompts[0]
+        contact_line = f"\n📞 للتواصل مع البائع: <b>{esc(contact_hint)}</b>" if contact_hint else ""
+        dep_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📸 إرسال وصل العربون الآن", callback_data=f"ord_dep_send:{oid}")],
+            [InlineKeyboardButton(text="⏭️ لاحقاً / تخطي", callback_data="ord_dep_skip")],
+        ])
+        await message_obj.answer(
+            f"💵 <b>طلب عربون لتأكيد الطلب (#{oid})</b>\n\n"
+            f"🏪 المتجر <b>{esc(sname)}</b> يطلب عربوناً بقيمة <b>{dep_amt:g} {DEFAULT_CURRENCY}</b> لتأكيد الشحن السريع.{contact_line}\n\n"
+            f"يمكنك إرسال صورة وصل العربون الآن لتصل مباشرة للبائع:",
+            reply_markup=dep_kb,
+        )
+
+
+@buyer_router.callback_query(F.data.startswith("ord_dep_send:"))
+async def order_deposit_prompt(cb: CallbackQuery, state: FSMContext):
+    oid = int(cb.data.split(":")[1])
+    async with Session() as s:
+        order = await s.get(Order, oid)
+        if not order or order.buyer_tg_id != cb.from_user.id:
+            return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    await state.update_data(dep_order_id=oid)
+    await state.set_state(OrderDepositFSM.proof)
+    await cb.message.answer(f"📸 أرسل صورة وصل العربون للطلب #{oid} الآن (أو /cancel للإلغاء):")
+    await cb.answer()
+
+
+@buyer_router.callback_query(F.data == "ord_dep_skip")
+async def order_deposit_skip(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    with suppress(Exception):
+        await cb.message.edit_text("⏭️ تم التخطي. يمكنك التواصل مع البائع لاحقاً.")
+    await cb.answer()
+
+
+@buyer_router.message(OrderDepositFSM.proof, F.photo)
+async def order_deposit_receive(message: Message, state: FSMContext):
+    lang = await get_lang(message.from_user.id)
+    data = await state.get_data()
+    oid = int(data.get("dep_order_id") or 0)
+    await state.clear()
+    photo_id = message.photo[-1].file_id
+    async with Session() as s:
+        order = await s.get(Order, oid)
+        if not order or order.buyer_tg_id != message.from_user.id:
+            return await message.answer("❌ الطلب غير موجود.", reply_markup=await get_main_kb(message.from_user.id, lang))
+        order.deposit_proof = photo_id
+        seller_uid = order.seller_tg_id
+        buyer_name = order.buyer_name
+        await s.commit()
+    await message.answer(
+        f"✅ تم إرسال وصل العربون للطلب <b>#{oid}</b> إلى البائع بنجاح!",
+        reply_markup=await get_main_kb(message.from_user.id, lang),
+    )
+    with suppress(Exception):
+        await message.bot.send_photo(
+            seller_uid,
+            photo=photo_id,
+            caption=f"💵 <b>وصل عربون للطلب #{oid}</b>\n👤 المشتري: <b>{esc(buyer_name)}</b>",
+        )
+
+
+@buyer_router.message(OrderDepositFSM.proof, ~F.photo)
+async def order_deposit_invalid(message: Message):
+    await message.answer("📸 يرجى إرسال صورة وصل العربون (أو /cancel للإلغاء).")
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -5325,17 +6368,36 @@ async def create_store_name(message: Message, state: FSMContext):
     max_stores = await user_max_stores(message.from_user.id)
     if len(stores) >= max_stores:
         await state.clear()
-        return await message.answer(f"❌ وصلت للحد الأقصى ({max_stores} متاجر).", reply_markup=await get_main_kb(message.from_user.id, lang))
+        return await message.answer(
+            f"❌ وصلت للحد الأقصى للمتاجر في باقتك الحالية ({max_stores}). يمكنك ترقية باقتك إلى Pro أو VIP لفتح المزيد من المتاجر!",
+            reply_markup=await get_main_kb(message.from_user.id, lang),
+        )
+    grant_trial = len(stores) == 0
     async with Session() as s:
-        s.add(Store(owner_tg_id=message.from_user.id, name=message.text.strip()[:MAX_STORE_NAME_LEN], contact=message.from_user.username or ""))
+        st = Store(
+            owner_tg_id=message.from_user.id,
+            name=message.text.strip()[:MAX_STORE_NAME_LEN],
+            contact=message.from_user.username or "",
+        )
+        if grant_trial:
+            st.plan_tier = "pro"
+            st.plan_expires_at = utcnow() + timedelta(days=TRIAL_DAYS)
+            st.auto_approve = True
+            st.trial_used = True
+        s.add(st)
         u = await ensure_user(s, message.from_user.id, lang)
         u.role = "seller"
         await s.commit()
     await state.clear()
-    await message.answer(t(lang, "store_created"), reply_markup=await get_main_kb(message.from_user.id, lang))
+    trial_note = (
+        f"\n\n🎁 <b>هدية الترحيب!</b> تم تفعيل <b>تجربة باقة Pro المجانية لمدة {TRIAL_DAYS} أيام</b> لمتجرك (نشر مباشر + حتى {MAX_PRODUCTS_PRO} منتج + إحصائيات كاملة)!"
+        if grant_trial
+        else ""
+    )
+    await message.answer(t(lang, "store_created") + trial_note, reply_markup=await get_main_kb(message.from_user.id, lang))
 
 
-# ─── Store Settings & 58-Wilaya Delivery Rates ───
+# ─── Store Settings & 58-Wilaya Delivery Rates & COD Deposit ───
 
 @seller_router.callback_query(F.data.startswith("st_settings:"))
 async def store_settings(cb: CallbackQuery):
@@ -5349,6 +6411,7 @@ async def store_settings(cb: CallbackQuery):
         [InlineKeyboardButton(text=t(lang, "btn_edit_logo"), callback_data=f"st_setlogo:{store_id}")],
         [InlineKeyboardButton(text=t(lang, "btn_edit_contacts"), callback_data=f"st_setcontacts:{store_id}")],
         [InlineKeyboardButton(text="🚚 أسعار التوصيل (58 ولاية)", callback_data=f"st_delivery:{store_id}")],
+        [InlineKeyboardButton(text=t(lang, "btn_store_deposit"), callback_data=f"st_deposit:{store_id}")],
         [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=f"mngstore:{store_id}")],
     ])
     try:
@@ -5356,6 +6419,106 @@ async def store_settings(cb: CallbackQuery):
     except Exception:
         await cb.message.answer(t(lang, "settings_menu"), reply_markup=kb)
     await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("st_deposit:"))
+async def store_deposit_menu(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    sid = int(cb.data.split(":")[1])
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    lang = await get_lang(cb.from_user.id)
+    async with Session() as s:
+        st = await s.get(Store, sid)
+    if not st:
+        return await cb.answer("Not found", show_alert=True)
+    dep_amt = float(st.deposit_amount or 0.0)
+    dep_thr = float(st.deposit_threshold or 0.0)
+    status = (
+        f"✅ مفعّل — طلب عربون <b>{dep_amt:g} {DEFAULT_CURRENCY}</b> للطلبات التي تفوق <b>{dep_thr:g} {DEFAULT_CURRENCY}</b>"
+        if dep_amt > 0
+        else "❌ معطّل (الدفع الكامل عند الاستلام بدون عربون)"
+    )
+    text = (
+        f"💵 <b>إعدادات العربون (للطلبات الدفع عند الاستلام) — {esc(st.name)}</b>\n\n"
+        f"📌 الحالة الحالية: {status}\n\n"
+        f"💡 عند تفعيل العربون، سيُعرض للمشتري خيار إرسال صورة وصل العربون فور تأكيد الطلب لحمايتك من الطلبات غير الجادة."
+    )
+    rows = [
+        [InlineKeyboardButton(text="✏️ تفعيل / تعديل قيمة العربون", callback_data=f"st_dep_set:{sid}")],
+    ]
+    if dep_amt > 0:
+        rows.append([InlineKeyboardButton(text="🚫 إيقاف طلب العربون", callback_data=f"st_dep_off:{sid}")])
+    rows.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=f"st_settings:{sid}")])
+    try:
+        await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    except Exception:
+        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("st_dep_set:"))
+async def store_deposit_set_start(cb: CallbackQuery, state: FSMContext):
+    sid = int(cb.data.split(":")[1])
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    await state.update_data(dep_sid=sid)
+    await state.set_state(StoreDepositFSM.threshold)
+    await cb.message.answer(
+        f"💵 أرسل الحد الأدنى لقيمة الطلب الذي يتطلب عربوناً ({DEFAULT_CURRENCY})\n"
+        f"مثال: <code>5000</code> (أو أرسل <code>0</code> لطلب عربون على كل الطلبات):"
+    )
+    await cb.answer()
+
+
+@seller_router.message(StoreDepositFSM.threshold)
+async def store_deposit_set_threshold(message: Message, state: FSMContext):
+    thr = _parse_positive_float(message.text or "", allow_zero=True)
+    if thr is None:
+        return await message.answer("❌ يرجى إدخال رقم صحيح (مثال: 5000 أو 0).")
+    await state.update_data(dep_threshold=thr)
+    await state.set_state(StoreDepositFSM.amount)
+    await message.answer(f"💰 أرسل مبلغ العربون المطلوب ({DEFAULT_CURRENCY}) — مثال: <code>500</code>:")
+
+
+@seller_router.message(StoreDepositFSM.amount)
+async def store_deposit_set_amount(message: Message, state: FSMContext):
+    lang = await get_lang(message.from_user.id)
+    amt = _parse_positive_float(message.text or "", allow_zero=False)
+    if amt is None:
+        return await message.answer("❌ يرجى إدخال مبلغ عربون صحيح أكبر من 0.")
+    data = await state.get_data()
+    sid = int(data.get("dep_sid") or 0)
+    thr = float(data.get("dep_threshold") or 0.0)
+    await state.clear()
+    async with Session() as s:
+        st = await s.get(Store, sid)
+        if st and (st.owner_tg_id == message.from_user.id or message.from_user.id in ADMIN_IDS):
+            st.deposit_threshold = thr
+            st.deposit_amount = amt
+            await s.commit()
+    await message.answer(
+        f"✅ تم تفعيل إعدادات العربون بنجاح!\n"
+        f"💰 العربون: <b>{amt:g} {DEFAULT_CURRENCY}</b> للطلبات ≥ <b>{thr:g} {DEFAULT_CURRENCY}</b>.",
+        reply_markup=back_kb(lang, f"st_deposit:{sid}"),
+    )
+
+
+@seller_router.callback_query(F.data.startswith("st_dep_off:"))
+async def store_deposit_disable(cb: CallbackQuery):
+    sid = int(cb.data.split(":")[1])
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    async with Session() as s:
+        st = await s.get(Store, sid)
+        if st:
+            st.deposit_amount = 0.0
+            st.deposit_threshold = 0.0
+            await s.commit()
+    await cb.answer("🚫 تم إيقاف طلب العربون.", show_alert=True)
+    lang = await get_lang(cb.from_user.id)
+    with suppress(Exception):
+        await cb.message.edit_text("🚫 تم إيقاف طلب العربون لهذا المتجر.", reply_markup=back_kb(lang, f"st_settings:{sid}"))
 
 
 @seller_router.callback_query(F.data.startswith("st_delivery:"))
@@ -6355,10 +7518,30 @@ async def add_start(cb: CallbackQuery, state: FSMContext):
     if not await is_store_owner(cb.from_user.id, sid):
         return await cb.answer("⛔ غير مصرح.", show_alert=True)
     lang = await get_lang(cb.from_user.id)
+    async with Session() as s:
+        store = await s.get(Store, sid)
+        pcount = (
+            await s.execute(
+                select(func.count(Product.id)).where(Product.store_id == sid, Product.is_deleted.is_(False))
+            )
+        ).scalar() or 0
+        max_prods = store_max_products(store)
+        if max_prods is not None and pcount >= max_prods:
+            tier_lbl = store_tier_label(store, lang)
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="👑 ترقية الباقة الآن (Pro / VIP)", callback_data=f"st_vip:{sid}")],
+                [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=f"mngstore:{sid}")],
+            ])
+            await cb.message.answer(
+                f"⚠️ <b>وصلت للحد الأقصى للمنتجات في باقتك ({tier_lbl})</b>\n\n"
+                f"📦 عدد منتجاتك الحالي: <b>{pcount} / {max_prods}</b>\n\n"
+                f"💡 رقّي متجرك إلى <b>⭐ Pro (50 منتج)</b> أو <b>👑 VIP (منتجات غير محدودة)</b> للاستمرار في الإضافة!",
+                reply_markup=kb,
+            )
+            return await cb.answer()
+        cats = (await s.execute(select(Category).order_by(Category.id.asc()))).scalars().all()
     await state.clear()
     await state.update_data(active_store_id=sid, category_id=None, category_name="-")
-    async with Session() as s:
-        cats = (await s.execute(select(Category).order_by(Category.id.asc()))).scalars().all()
     if cats:
         await state.set_state(AddProduct.category)
         kb = [[InlineKeyboardButton(text=f"📂 {_cat_name(c, lang)}", callback_data=f"addcat:{c.id}")] for c in cats]
@@ -6565,7 +7748,7 @@ async def add_confirm(cb: CallbackQuery, state: FSMContext):
     lang = await get_lang(cb.from_user.id)
     async with Session() as s:
         store = await s.get(Store, sid)
-        auto_live = bool(store and (store.auto_approve or is_store_vip(store)))
+        auto_live = store_can_auto_approve(store)
         p = Product(
             store_id=sid,
             category_id=data.get("category_id"),
@@ -6767,6 +7950,8 @@ async def _render_order_view(msg_obj: Message, oid: int, lang: str, edit: bool =
     extras.append(f"{t(lang, 'trust_label')}: <b>{trust_badge}</b>")
     if order.tracking_info:
         extras.append(f"🔎 معلومات التتبع: <code>{esc(order.tracking_info)}</code>")
+    if order.deposit_proof:
+        extras.append("💵 العربون: <b>✅ تم إرسال وصل العربون</b>")
     text = (
         t(
             lang,
@@ -6786,14 +7971,17 @@ async def _render_order_view(msg_obj: Message, oid: int, lang: str, edit: bool =
         + "\n".join(extras)
     )
     back_cb = f"st_orders:{sid}:1" if sid else "menu:home"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
+    kb_rows = [
         [InlineKeyboardButton(text=t(lang, "status_pending"), callback_data=f"ord_st:{oid}:pending"),
          InlineKeyboardButton(text=t(lang, "status_shipped"), callback_data=f"ord_st:{oid}:shipped")],
         [InlineKeyboardButton(text=t(lang, "status_completed"), callback_data=f"ord_st:{oid}:completed"),
          InlineKeyboardButton(text=t(lang, "status_cancelled"), callback_data=f"ord_st:{oid}:cancelled")],
-        [InlineKeyboardButton(text=t(lang, "btn_report_fake_order"), callback_data=f"ord_fake_rep:{oid}")],
-        [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=back_cb)],
-    ])
+    ]
+    if order.deposit_proof:
+        kb_rows.append([InlineKeyboardButton(text="📸 عرض وصل العربون", callback_data=f"ord_view_dep:{oid}")])
+    kb_rows.append([InlineKeyboardButton(text=t(lang, "btn_report_fake_order"), callback_data=f"ord_fake_rep:{oid}")])
+    kb_rows.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=back_cb)])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
     if edit:
         try:
             await msg_obj.edit_text(text, reply_markup=kb)
@@ -6801,6 +7989,19 @@ async def _render_order_view(msg_obj: Message, oid: int, lang: str, edit: bool =
         except Exception:
             pass
     await msg_obj.answer(text, reply_markup=kb)
+
+
+@seller_router.callback_query(F.data.startswith("ord_view_dep:"))
+async def seller_view_order_deposit(cb: CallbackQuery):
+    oid = int(cb.data.split(":")[1])
+    if not await is_order_seller(cb.from_user.id, oid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    async with Session() as s:
+        order = await s.get(Order, oid)
+    if not order or not order.deposit_proof:
+        return await cb.answer("❌ لا يوجد وصل عربون لهذا الطلب.", show_alert=True)
+    await cb.message.answer_photo(order.deposit_proof, caption=f"💵 وصل العربون للطلب <b>#{oid}</b>")
+    await cb.answer()
 
 
 @seller_router.callback_query(F.data.startswith("ord_fake_rep:"))
@@ -7272,17 +8473,20 @@ async def product_ad_pkg(cb: CallbackQuery, state: FSMContext):
         return await cb.answer("⛔ غير مصرح.", show_alert=True)
     pkg_info = AD_PACKAGES.get(pkg, AD_PACKAGES["basic"])
     price = float(pkg_info["price"])
-    await state.update_data(pad_pkg=pkg)
+    ref_code = generate_pay_ref()
+    await state.update_data(pad_pkg=pkg, pad_ref=ref_code)
     lang = await get_lang(cb.from_user.id)
     async with Session() as s:
         u = await ensure_user(s, cb.from_user.id, lang)
         await s.commit()
         credits = float(u.ad_credits or 0.0)
+        instr = await format_payment_instructions(s, lang, ref_code=ref_code, amount=price)
+    chg_key, _ = await get_chargily_config()
     text = (
-        f"{t(lang, 'ad_payment_instructions')}\n\n"
-        f"📦 الباقة: <b>{esc(pkg_info['label'])}</b>\n"
+        f"⭐ <b>ترويج المنتج — {esc(pkg_info['label'])}</b>\n"
         f"💰 السعر: <b>{price:g} {DEFAULT_CURRENCY}</b>\n"
-        f"💳 رصيد محفظتك الحالي: <b>{credits:g} {DEFAULT_CURRENCY}</b>"
+        f"💳 رصيد محفظتك الحالي: <b>{credits:g} {DEFAULT_CURRENCY}</b>\n\n"
+        f"{instr}"
     )
     rows = []
     if credits >= price:
@@ -7290,6 +8494,13 @@ async def product_ad_pkg(cb: CallbackQuery, state: FSMContext):
             InlineKeyboardButton(
                 text=f"💳 الدفع من المحفظة ({price:g} {DEFAULT_CURRENCY}) — تفعيل فوري ⚡",
                 callback_data=f"pad_wallet_pay:{pkg}:{pid}",
+            )
+        ])
+    if chg_key:
+        rows.append([
+            InlineKeyboardButton(
+                text=t(lang, "btn_pay_chargily"),
+                callback_data=f"chg_pay:product:{pid}:{pkg}",
             )
         ])
     rows.append([InlineKeyboardButton(text=t(lang, "btn_send_payment_proof"), callback_data="pad_send_proof")])
@@ -7325,6 +8536,14 @@ async def product_ad_wallet_pay(cb: CallbackQuery, state: FSMContext):
         if not p or p.is_deleted:
             await s.rollback()
             return await cb.answer("❌ المنتج غير موجود.", show_alert=True)
+        u = await ensure_user(s, uid, lang)
+        s.add(WalletTransaction(
+            user_tg_id=uid,
+            tx_type="ad",
+            amount=-round(price, 2),
+            balance_after=float(u.ad_credits or 0.0),
+            description=f"📢 إعلان مميز للمنتج #{pid} ({pkg_info['label']})",
+        ))
         base_dt = p.featured_until if (p.featured_until and p.featured_until > utcnow()) else utcnow()
         p.featured_until = base_dt + timedelta(days=days)
         until_str = p.featured_until.strftime("%Y-%m-%d %H:%M")
@@ -7356,12 +8575,16 @@ async def product_ad_receive_proof(message: Message, state: FSMContext):
     lang = await get_lang(message.from_user.id)
     data = await state.get_data()
     pid, sid, pkg = data.get("pad_pid"), data.get("pad_store_id"), data.get("pad_pkg")
+    ref_code = str(data.get("pad_ref") or generate_pay_ref())
     if not (pid and sid and pkg) or not await is_product_owner(message.from_user.id, pid):
         await state.clear()
         return await message.answer("انتهت الجلسة، ابدأ من جديد.")
     proof = message.photo[-1].file_id
+    uniq_id = message.photo[-1].file_unique_id
     price = float(AD_PACKAGES.get(pkg, AD_PACKAGES["basic"])["price"])
     async with Session() as s:
+        if await is_duplicate_receipt(s, uniq_id):
+            return await message.answer(t(lang, "dup_receipt_err"))
         areq = AdRequest(
             user_tg_id=message.from_user.id,
             ad_type="product",
@@ -7369,6 +8592,8 @@ async def product_ad_receive_proof(message: Message, state: FSMContext):
             package_name=pkg,
             price=price,
             payment_proof=proof,
+            proof_unique_id=uniq_id,
+            ref_code=ref_code,
             status="pending",
         )
         s.add(areq)
@@ -7383,13 +8608,16 @@ async def product_ad_receive_proof(message: Message, state: FSMContext):
         InlineKeyboardButton(text=t("ar", "btn_confirm_payment"), callback_data=f"admin:confirm_payment:{areq_id}"),
         InlineKeyboardButton(text=t("ar", "btn_reject_bot_ad"), callback_data=f"admin:reject_payment:{areq_id}"),
     ]])
-    admin_text = t(
-        "ar",
-        "admin_ad_req_view",
-        user_id=message.from_user.id,
-        package=esc(pkg),
-        price=f"{price:g} {DEFAULT_CURRENCY}",
-        type=f"product #{pid} ({esc(ptitle)})",
+    admin_text = (
+        t(
+            "ar",
+            "admin_ad_req_view",
+            user_id=message.from_user.id,
+            package=esc(pkg),
+            price=f"{price:g} {DEFAULT_CURRENCY}",
+            type=f"product #{pid} ({esc(ptitle)})",
+        )
+        + f"\n🏷️ المرجع: <code>{esc(ref_code)}</code>"
     )
     await notify_admins(message.bot, admin_text, reply_markup=admin_kb, photo=proof)
 
@@ -7399,7 +8627,7 @@ async def product_ad_receive_proof_invalid(message: Message):
     await message.answer("📸 أرسل صورة إثبات الدفع:")
 
 
-# ─── Store Wallet Shortcut & Store VIP Subscriptions ───
+# ─── Store Wallet Shortcut & Store Subscriptions (Free / Pro / VIP) ───
 
 @seller_router.callback_query(F.data.startswith("st_wallet:"))
 async def store_wallet_shortcut(cb: CallbackQuery):
@@ -7410,66 +8638,189 @@ async def store_wallet_shortcut(cb: CallbackQuery):
     await cb.answer()
 
 
+async def _render_store_plans_view(msg_obj: Message, uid: int, sid: int, state: FSMContext, edit: bool = True):
+    lang = await get_lang(uid)
+    st_data = await state.get_data()
+    coupon_code = st_data.get("sub_coupon_code", "")
+    coupon_pct = int(st_data.get("sub_coupon_pct", 0) or 0)
+    async with Session() as s:
+        st = await s.get(Store, sid)
+        u = await ensure_user(s, uid, lang)
+        plans = await get_dynamic_plans(s)
+        await s.commit()
+    if not st:
+        return
+    tier = effective_store_tier(st)
+    exp = _store_expiry_dt(st)
+    if tier in ("pro", "vip") and exp:
+        grace_str = " (⏳ فترة سماح 48 ساعة)" if store_in_grace_period(st) else ""
+        status_str = f"{store_tier_label(st, lang)} — صالح حتى <b>{exp.strftime('%Y-%m-%d')}</b>{grace_str}"
+    else:
+        status_str = "🆓 Free (الباقة المجانية)"
+    coupon_line = f"\n🎟️ كوبون الخصم المطبق: <code>{esc(coupon_code)}</code> (<b>-{coupon_pct}%</b>)" if coupon_pct > 0 else ""
+
+    p_pro = plans["pro_30"]
+    p_vip30 = plans["vip_30"]
+    p_vip90 = plans["vip_90"]
+
+    text = (
+        f"👑 <b>باقات الاشتراك — {esc(st.name)}</b>\n\n"
+        f"📌 باقتك الحالية: {status_str}\n"
+        f"💳 رصيد محفظتك: <b>{float(u.ad_credits or 0):g} {DEFAULT_CURRENCY}</b>{coupon_line}\n\n"
+        f"🆓 <b>Free (مجاني):</b> {MAX_STORES_FREE} متجر • {MAX_PRODUCTS_FREE} منتج • مراجعة يدوية\n"
+        f"⭐ <b>Pro ({p_pro['price']:g} {DEFAULT_CURRENCY}/شهر):</b> {MAX_STORES_PRO} متاجر • {MAX_PRODUCTS_PRO} منتج • نشر مباشر ⚡ • إحصائيات كاملة\n"
+        f"👑 <b>VIP ({p_vip30['price']:g} {DEFAULT_CURRENCY}/شهر):</b> {MAX_STORES_VIP} متاجر • منتجات غير محدودة ∞ • شارة التاج والتوثيق ✓ • أولوية الظهور • 🎁 هدية <b>{p_vip30['bonus']:g} {DEFAULT_CURRENCY}</b> رصيد إعلانات شهرياً!\n"
+        f"💎 <b>VIP ربع سنوي (90 يوم):</b> {p_vip90['price']:g} {DEFAULT_CURRENCY} + 🎁 <b>{p_vip90['bonus']:g} {DEFAULT_CURRENCY}</b> هدية!\n\n"
+        f"🛡️ <i>فترة سماح {SUB_GRACE_HOURS} ساعة بعد الانتهاء دون حذف أي منتج.</i>"
+    )
+    rows = []
+    if not st.trial_used and tier == "free":
+        rows.append([
+            InlineKeyboardButton(
+                text=f"🎁 تفعيل تجربة Pro المجانية ({TRIAL_DAYS} أيام)",
+                callback_data=f"vip_trial:{sid}",
+            )
+        ])
+    for key in ("pro_30", "vip_30", "vip_90"):
+        info = plans[key]
+        base_p = float(info["price"])
+        final_p = max(100.0, round(base_p * (1.0 - coupon_pct / 100.0), 2)) if coupon_pct > 0 else base_p
+        price_lbl = f"{final_p:g} {DEFAULT_CURRENCY}" + (f" (بدل {base_p:g})" if coupon_pct > 0 else "")
+        rows.append([
+            InlineKeyboardButton(
+                text=f"{info['label']} — {price_lbl}",
+                callback_data=f"vip_buy:{sid}:{key}",
+            )
+        ])
+    rows.append([
+        InlineKeyboardButton(
+            text="🎟️ إدخال كود خصم اشتراك",
+            callback_data=f"st_sub_coupon:{sid}",
+        )
+    ])
+    ar_lbl = "♻️ التجديد التلقائي من المحفظة: مفعّل ✅" if st.auto_renew else "♻️ التجديد التلقائي من المحفظة: معطّل ❌"
+    rows.append([InlineKeyboardButton(text=ar_lbl, callback_data=f"vip_autorenew:{sid}")])
+    rows.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=f"mngstore:{sid}")])
+    markup = InlineKeyboardMarkup(inline_keyboard=rows)
+    if edit:
+        try:
+            await msg_obj.edit_text(text, reply_markup=markup)
+            return
+        except Exception:
+            pass
+    await msg_obj.answer(text, reply_markup=markup)
+
+
 @seller_router.callback_query(F.data.startswith("st_vip:"))
 async def store_vip_menu(cb: CallbackQuery, state: FSMContext):
-    await state.clear()
     sid = int(cb.data.split(":")[1])
     if not await is_store_owner(cb.from_user.id, sid):
         return await cb.answer("⛔ غير مصرح.", show_alert=True)
-    lang = await get_lang(cb.from_user.id)
-    async with Session() as s:
-        st = await s.get(Store, sid)
-        u = await ensure_user(s, cb.from_user.id, lang)
-        await s.commit()
-    if not st:
-        return await cb.answer("Not found", show_alert=True)
-    vip_status = (
-        f"✅ مفعل حتى <b>{st.vip_until.strftime('%Y-%m-%d')}</b>"
-        if is_store_vip(st)
-        else "❌ غير مفعل حالياً"
-    )
-    text = (
-        f"👑 <b>باقة VIP للمتجر — {esc(st.name)}</b>\n\n"
-        f"📌 الحالة الحالية: {vip_status}\n"
-        f"💳 رصيد محفظتك: <b>{float(u.ad_credits or 0):g} {DEFAULT_CURRENCY}</b>\n\n"
-        f"✨ <b>مميزات باقة VIP:</b>\n"
-        f"• 👑 شارة التاج والتوثيق تلقائياً\n"
-        f"• ⚡ نشر المنتجات مباشرة بدون انتظار موافقة الإدارة\n"
-        f"• 🏆 أولوية الظهور في أعلى قائمة المتاجر المميزة\n"
-        f"• 🏪 فتح حتى <b>{MAX_STORES_VIP} متاجر</b> بدلاً من {MAX_STORES_PER_USER}\n\n"
-        f"اختر الباقة المناسبة:"
-    )
-    rows = [
-        [InlineKeyboardButton(text=info["label"], callback_data=f"vip_buy:{sid}:{key}")]
-        for key, info in VIP_PLANS.items()
-    ]
-    rows.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=f"mngstore:{sid}")])
-    try:
-        await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
-    except Exception:
-        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await _render_store_plans_view(cb.message, cb.from_user.id, sid, state, edit=True)
     await cb.answer()
 
 
+@seller_router.callback_query(F.data.startswith("vip_trial:"))
+async def store_vip_activate_trial(cb: CallbackQuery, state: FSMContext):
+    sid = int(cb.data.split(":")[1])
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    async with Session() as s:
+        st = await s.get(Store, sid)
+        if not st:
+            return await cb.answer("❌ المتجر غير موجود.", show_alert=True)
+        if st.trial_used:
+            return await cb.answer("⚠️ تم استخدام التجربة المجانية لهذا المتجر مسبقاً.", show_alert=True)
+        st.trial_used = True
+        st.plan_tier = "pro"
+        st.plan_expires_at = utcnow() + timedelta(days=TRIAL_DAYS)
+        st.auto_approve = True
+        st.expiry_reminded_3d = False
+        st.expiry_reminded_1d = False
+        until_str = st.plan_expires_at.strftime("%Y-%m-%d")
+        await s.commit()
+    await cb.answer(f"🎁 تم تفعيل تجربة Pro المجانية حتى {until_str}!", show_alert=True)
+    await _render_store_plans_view(cb.message, cb.from_user.id, sid, state, edit=True)
+
+
+@seller_router.callback_query(F.data.startswith("vip_autorenew:"))
+async def store_vip_toggle_autorenew(cb: CallbackQuery, state: FSMContext):
+    sid = int(cb.data.split(":")[1])
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    async with Session() as s:
+        st = await s.get(Store, sid)
+        if not st:
+            return await cb.answer("❌ المتجر غير موجود.", show_alert=True)
+        st.auto_renew = not bool(st.auto_renew)
+        new_val = st.auto_renew
+        await s.commit()
+    await cb.answer("♻️ تم تفعيل التجديد التلقائي من المحفظة." if new_val else "⏸️ تم إيقاف التجديد التلقائي.", show_alert=True)
+    await _render_store_plans_view(cb.message, cb.from_user.id, sid, state, edit=True)
+
+
+@seller_router.callback_query(F.data.startswith("st_sub_coupon:"))
+async def store_sub_coupon_prompt(cb: CallbackQuery, state: FSMContext):
+    sid = int(cb.data.split(":")[1])
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    await state.update_data(sub_coupon_sid=sid)
+    await state.set_state(SubCouponApplyFSM.code)
+    await cb.message.answer("🎟️ أرسل كود خصم الاشتراك الآن (أو /cancel للإلغاء):")
+    await cb.answer()
+
+
+@seller_router.message(SubCouponApplyFSM.code)
+async def store_sub_coupon_apply(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    data = await state.get_data()
+    sid = int(data.get("sub_coupon_sid") or 0)
+    code = (message.text or "").strip().upper()
+    async with Session() as s:
+        sc = (await s.execute(select(SubCoupon).where(SubCoupon.code == code))).scalar_one_or_none()
+        if not sc or not sc.is_active or sc.used_count >= sc.max_uses or not (1 <= sc.discount_percent <= 95):
+            return await message.answer("❌ كود الخصم غير صحيح أو منتهي الصلاحية. جرّب كوداً آخر أو أرسل /cancel:")
+        pct = int(sc.discount_percent)
+    await state.set_state(None)
+    await state.update_data(sub_coupon_code=code, sub_coupon_pct=pct)
+    await message.answer(f"🎉 تم تطبيق كود الخصم <code>{esc(code)}</code> بنسبة <b>-{pct}%</b>!")
+    if sid:
+        await _render_store_plans_view(message, uid, sid, state, edit=False)
+
+
 @seller_router.callback_query(F.data.startswith("vip_buy:"))
-async def store_vip_choose_payment(cb: CallbackQuery):
+async def store_vip_choose_payment(cb: CallbackQuery, state: FSMContext):
     _, sid_str, plan_key = cb.data.split(":")
     sid = int(sid_str)
     if not await is_store_owner(cb.from_user.id, sid):
         return await cb.answer("⛔ غير مصرح.", show_alert=True)
-    plan = VIP_PLANS.get(plan_key)
-    if not plan:
-        return await cb.answer("❌ باقة غير صالحة.", show_alert=True)
     lang = await get_lang(cb.from_user.id)
+    st_data = await state.get_data()
+    coupon_code = st_data.get("sub_coupon_code", "")
+    coupon_pct = int(st_data.get("sub_coupon_pct", 0) or 0)
+    ref_code = generate_pay_ref()
+
     async with Session() as s:
+        plans = await get_dynamic_plans(s)
+        plan = plans.get(plan_key)
+        if not plan:
+            return await cb.answer("❌ باقة غير صالحة.", show_alert=True)
         u = await ensure_user(s, cb.from_user.id, lang)
         await s.commit()
         credits = float(u.ad_credits or 0.0)
-    price = float(plan["price"])
+        base_price = float(plan["price"])
+        price = max(100.0, round(base_price * (1.0 - coupon_pct / 100.0), 2)) if coupon_pct > 0 else base_price
+        instr = await format_payment_instructions(s, lang, ref_code=ref_code, amount=price)
+
+    await state.update_data(vip_ref=ref_code, vip_final_price=price)
+    chg_key, _ = await get_chargily_config()
+    bonus_line = f"\n🎁 هدية إعلانات مجانية: <b>+{float(plan.get('bonus', 0)):g} {DEFAULT_CURRENCY}</b>" if float(plan.get("bonus", 0)) > 0 else ""
+    disc_line = f"\n🎟️ بعد خصم الكوبون <code>{esc(coupon_code)}</code> (-{coupon_pct}%): <b>{price:g} {DEFAULT_CURRENCY}</b>" if coupon_pct > 0 else f"\n💰 السعر: <b>{price:g} {DEFAULT_CURRENCY}</b>"
     text = (
-        f"👑 <b>{esc(plan['label'])}</b>\n\n"
+        f"👑 <b>{esc(plan['label'])}</b>"
+        f"{disc_line}{bonus_line}\n"
         f"💳 رصيد محفظتك الحالي: <b>{credits:g} {DEFAULT_CURRENCY}</b>\n\n"
-        f"{t(lang, 'ad_payment_instructions')}"
+        f"{instr}"
     )
     rows = []
     if credits >= price:
@@ -7479,7 +8830,14 @@ async def store_vip_choose_payment(cb: CallbackQuery):
                 callback_data=f"vip_wallet:{sid}:{plan_key}",
             )
         ])
-    rows.append([InlineKeyboardButton(text="📸 إرسال وصل دفع (CCP / BaridiMob)", callback_data=f"vip_proof:{sid}:{plan_key}")])
+    if chg_key:
+        rows.append([
+            InlineKeyboardButton(
+                text=t(lang, "btn_pay_chargily"),
+                callback_data=f"chg_pay:store_vip:{sid}:{plan_key}",
+            )
+        ])
+    rows.append([InlineKeyboardButton(text="📸 إرسال وصل دفع يدوي", callback_data=f"vip_proof:{sid}:{plan_key}")])
     rows.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=f"st_vip:{sid}")])
     try:
         await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
@@ -7489,20 +8847,33 @@ async def store_vip_choose_payment(cb: CallbackQuery):
 
 
 @seller_router.callback_query(F.data.startswith("vip_wallet:"))
-async def store_vip_wallet_pay(cb: CallbackQuery):
+async def store_vip_wallet_pay(cb: CallbackQuery, state: FSMContext):
     _, sid_str, plan_key = cb.data.split(":")
     sid = int(sid_str)
     uid = cb.from_user.id
     if not await is_store_owner(uid, sid):
         return await cb.answer("⛔ غير مصرح.", show_alert=True)
-    plan = VIP_PLANS.get(plan_key)
-    if not plan:
-        return await cb.answer("❌ باقة غير صالحة.", show_alert=True)
-    price = float(plan["price"])
-    days = int(plan["days"])
     lang = await get_lang(uid)
+    st_data = await state.get_data()
+    coupon_code = st_data.get("sub_coupon_code", "")
+    coupon_pct = int(st_data.get("sub_coupon_pct", 0) or 0)
 
     async with Session() as s:
+        plans = await get_dynamic_plans(s)
+        plan = plans.get(plan_key)
+        if not plan:
+            return await cb.answer("❌ باقة غير صالحة.", show_alert=True)
+        base_price = float(plan["price"])
+        applied_sc = None
+        if coupon_code and coupon_pct > 0:
+            sc = (await s.execute(select(SubCoupon).where(SubCoupon.code == coupon_code))).scalar_one_or_none()
+            if sc and sc.is_active and sc.used_count < sc.max_uses:
+                applied_sc = sc
+                coupon_pct = int(sc.discount_percent)
+            else:
+                coupon_pct = 0
+        price = max(100.0, round(base_price * (1.0 - coupon_pct / 100.0), 2)) if coupon_pct > 0 else base_price
+
         res = await s.execute(
             update(User)
             .where(User.tg_id == uid, User.ad_credits >= price)
@@ -7514,23 +8885,34 @@ async def store_vip_wallet_pay(cb: CallbackQuery):
         if not st:
             await s.rollback()
             return await cb.answer("❌ المتجر غير موجود.", show_alert=True)
-        base_dt = st.vip_until if (st.vip_until and st.vip_until > utcnow()) else utcnow()
-        st.vip_until = base_dt + timedelta(days=days)
-        st.verified = True
-        st.auto_approve = True
-        until_str = st.vip_until.strftime("%Y-%m-%d")
+        u = await ensure_user(s, uid, lang)
+        s.add(WalletTransaction(
+            user_tg_id=uid,
+            tx_type="subscription",
+            amount=-round(price, 2),
+            balance_after=float(u.ad_credits or 0.0),
+            description=f"👑 اشتراك {plan['label']} لمتجر {st.name}",
+            ref_code=coupon_code,
+        ))
+        if applied_sc:
+            applied_sc.used_count += 1
+            if applied_sc.used_count >= applied_sc.max_uses:
+                applied_sc.is_active = False
+        until_str, bonus, tier = await activate_store_plan(s, st, plan_key, user=u)
         st_name = st.name
         await s.commit()
 
+    await state.clear()
+    bonus_line = f"\n🎁 تم إضافة <b>+{bonus:g} {DEFAULT_CURRENCY}</b> هدية رصيد إعلانات إلى محفظتك!" if bonus > 0 else ""
     try:
         await cb.message.edit_text(
-            f"👑 <b>مبروك! تم تفعيل باقة VIP لمتجر {esc(st_name)} فوراً!</b>\n\n"
-            f"📅 صالح حتى: <b>{until_str}</b>\n"
-            f"⚡ تم تفعيل التوثيق والنشر المباشر تلقائياً.",
+            f"👑 <b>مبروك! تم تفعيل باقة {tier.upper()} لمتجر {esc(st_name)} فوراً!</b>\n\n"
+            f"💳 المخصوم: <b>{price:g} {DEFAULT_CURRENCY}</b>\n"
+            f"📅 صالح حتى: <b>{until_str}</b>{bonus_line}",
             reply_markup=back_kb(lang, f"mngstore:{sid}"),
         )
     except Exception:
-        await cb.message.answer(f"👑 تم تفعيل VIP لمتجر {esc(st_name)} حتى {until_str}!")
+        await cb.message.answer(f"👑 تم تفعيل {tier.upper()} لمتجر {esc(st_name)} حتى {until_str}!{bonus_line}")
     await cb.answer("👑 تم التفعيل بنجاح!", show_alert=True)
 
 
@@ -7542,7 +8924,7 @@ async def store_vip_proof_prompt(cb: CallbackQuery, state: FSMContext):
         return await cb.answer("⛔ غير مصرح.", show_alert=True)
     await state.update_data(vip_sid=sid, vip_plan=plan_key)
     await state.set_state(StoreVipFSM.payment_proof)
-    await cb.message.answer("📸 أرسل صورة وصل الدفع لتفعيل باقة VIP الآن (أو /cancel للإلغاء):")
+    await cb.message.answer("📸 أرسل صورة وصل الدفع لتفعيل الاشتراك الآن (أو /cancel للإلغاء):")
     await cb.answer()
 
 
@@ -7551,12 +8933,18 @@ async def store_vip_receive_proof(message: Message, state: FSMContext):
     lang = await get_lang(message.from_user.id)
     data = await state.get_data()
     sid, plan_key = data.get("vip_sid"), data.get("vip_plan")
-    await state.clear()
+    ref_code = str(data.get("vip_ref") or generate_pay_ref())
     if not (sid and plan_key in VIP_PLANS) or not await is_store_owner(message.from_user.id, sid):
+        await state.clear()
         return await message.answer("انتهت الجلسة، ابدأ من جديد.")
-    plan = VIP_PLANS[plan_key]
     proof = message.photo[-1].file_id
+    uniq_id = message.photo[-1].file_unique_id
     async with Session() as s:
+        if await is_duplicate_receipt(s, uniq_id):
+            return await message.answer(t(lang, "dup_receipt_err"))
+        plans = await get_dynamic_plans(s)
+        plan = plans[plan_key]
+        final_price = float(data.get("vip_final_price") or plan["price"])
         st = await s.get(Store, sid)
         st_name = st.name if st else f"#{sid}"
         areq = AdRequest(
@@ -7564,25 +8952,29 @@ async def store_vip_receive_proof(message: Message, state: FSMContext):
             ad_type="store_vip",
             target_id=sid,
             package_name=plan_key,
-            price=float(plan["price"]),
+            price=final_price,
             payment_proof=proof,
+            proof_unique_id=uniq_id,
+            ref_code=ref_code,
             status="pending",
         )
         s.add(areq)
         await s.commit()
         await s.refresh(areq)
         areq_id = areq.id
+    await state.clear()
     await message.answer(t(lang, "payment_proof_received"), reply_markup=await get_main_kb(message.from_user.id, lang))
     admin_kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ تأكيد وتفعيل VIP", callback_data=f"admin:confirm_payment:{areq_id}"),
+        InlineKeyboardButton(text="✅ تأكيد وتفعيل الاشتراك", callback_data=f"admin:confirm_payment:{areq_id}"),
         InlineKeyboardButton(text="❌ رفض الطلب", callback_data=f"admin:reject_payment:{areq_id}"),
     ]])
     await notify_admins(
         message.bot,
-        f"👑 <b>طلب اشتراك VIP جديد #{areq_id}</b>\n"
+        f"👑 <b>طلب اشتراك متجر جديد #{areq_id}</b>\n"
+        f"🏷️ المرجع: <code>{esc(ref_code)}</code>\n"
         f"🏪 المتجر: <b>{esc(st_name)}</b> (#{sid})\n"
         f"👤 البائع: <code>{message.from_user.id}</code>\n"
-        f"📦 الباقة: <b>{esc(plan['label'])}</b>",
+        f"📦 الباقة: <b>{esc(plan['label'])}</b> — <b>{final_price:g} {DEFAULT_CURRENCY}</b>",
         reply_markup=admin_kb,
         photo=proof,
     )
@@ -7864,7 +9256,8 @@ async def admin_cat_del_yes(cb: CallbackQuery):
     await admin_cats(cb)
 
 
-@seller_router.callback_query((F.data == "admin:gstats") | F.data.startswith("admin:gstats:"))
+@seller_router.callback_query(F.data == "admin:gstats")
+@seller_router.callback_query(F.data.startswith("admin:gstats:"))
 async def admin_gstats(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS:
         return await cb.answer("غير مصرح", show_alert=True)
@@ -8389,29 +9782,31 @@ async def admin_confirm_payment(cb: CallbackQuery):
             admin_alert = f"✅ تم تأكيد تمييز المنتج ({days} يوم)."
 
         elif areq.ad_type == "store_vip":
-            plan = VIP_PLANS.get(areq.package_name, VIP_PLANS["vip_30"])
-            days = int(plan["days"])
             st = await s.get(Store, areq.target_id)
             if st:
-                now = utcnow()
-                base = st.vip_until if (st.vip_until and st.vip_until > now) else now
-                st.vip_until = base + timedelta(days=days)
-                st.verified = True
-                st.auto_approve = True
+                until_str, bonus, tier = await activate_store_plan(s, st, areq.package_name)
+                b_line = f"\n🎁 تم إضافة <b>+{bonus:g} {DEFAULT_CURRENCY}</b> رصيد إعلانات هدية لمحفظتك!" if bonus > 0 else ""
                 user_msg = (
-                    f"👑 <b>مبروك! تم تأكيد وتفعيل باقة VIP لمتجرك {esc(st.name)}!</b>\n"
-                    f"📅 صالح حتى: <b>{st.vip_until.strftime('%Y-%m-%d')}</b>\n"
-                    f"⚡ تم تفعيل التوثيق والنشر المباشر تلقائياً."
+                    f"👑 <b>مبروك! تم تأكيد وتفعيل باقة {tier.upper()} لمتجرك {esc(st.name)}!</b>\n"
+                    f"📅 صالح حتى: <b>{until_str}</b>{b_line}"
                 )
+                admin_alert = f"👑 تم تفعيل {tier.upper()} للمتجر حتى {until_str}."
             else:
-                user_msg = "👑 تم تأكيد اشتراك VIP الخاص بك."
-            admin_alert = f"👑 تم تفعيل VIP للمتجر ({days} يوم)."
+                user_msg = "👑 تم تأكيد اشتراك متجرك بنجاح."
+                admin_alert = "👑 تم تفعيل الاشتراك."
 
         else:
             # wallet_topup
             u = await ensure_user(s, areq.user_tg_id, DEFAULT_LANG)
-            u.ad_credits = float(u.ad_credits or 0.0) + float(areq.price)
-            new_bal = u.ad_credits
+            await record_wallet_tx(
+                s,
+                u,
+                float(areq.price),
+                "topup",
+                f"💳 شحن رصيد مؤكد من الإدارة (#{areq.id})",
+                ref_code=areq.ref_code or "",
+            )
+            new_bal = float(u.ad_credits or 0.0)
             user_msg = (
                 f"💳 <b>تم شحن محفظتك بنجاح!</b>\n"
                 f"➕ المبلغ المضاف: <b>{areq.price:g} {DEFAULT_CURRENCY}</b>\n"
@@ -8811,6 +10206,521 @@ async def admin_blacklist_dismiss(cb: CallbackQuery):
     await cb.answer("✅ تم تجاهل البلاغ.")
 
 
+# ─── Admin Payment Methods, Chargily Pay v2 & Telegram Stars Panel ───
+
+async def _render_admin_paymethods(msg_obj: Message, lang: str, edit: bool = True):
+    async with Session() as s:
+        methods = (
+            await s.execute(select(PaymentMethod).order_by(PaymentMethod.sort_order.asc(), PaymentMethod.id.asc()))
+        ).scalars().all()
+    chg_key, chg_mode = await get_chargily_config()
+    stars_on, stars_rate = await get_stars_config()
+
+    chg_status = f"✅ مفعّل ({'🟢 Live' if chg_mode == 'live' else '🧪 Test'})" if chg_key else "❌ غير مفعّل"
+    stars_status = f"✅ مفعّل (1 ⭐ = {stars_rate:g} {DEFAULT_CURRENCY})" if stars_on else f"❌ معطّل (1 ⭐ = {stars_rate:g} {DEFAULT_CURRENCY})"
+
+    lines = [
+        "💳 <b>إدارة طرق الدفع وبوابات الشحن</b>\n",
+        f"⚡ <b>Chargily Pay (EDAHABIA / CIB):</b> {chg_status}",
+        f"⭐ <b>Telegram Stars (XTR):</b> {stars_status}\n",
+        "📋 <b>طرق التحويل اليدوي:</b>",
+    ]
+    kb = []
+    if not methods:
+        lines.append("— لا توجد طرق تحويل يدوي مضافة بعد —")
+    for pm in methods:
+        st_ic = "✅" if pm.is_active else "⏸️"
+        lines.append(f"{st_ic} <b>#{pm.id} {esc(pm.name)}</b>\n   <code>{esc(pm.details[:80])}</code>")
+        kb.append([
+            InlineKeyboardButton(text=f"{st_ic} {pm.name[:18]}", callback_data=f"admin:pm_toggle:{pm.id}"),
+            InlineKeyboardButton(text="✏️ تعديل", callback_data=f"admin:pm_edit:{pm.id}"),
+            InlineKeyboardButton(text="🗑️", callback_data=f"admin:pm_del:{pm.id}"),
+        ])
+    kb.append([InlineKeyboardButton(text="➕ إضافة طريقة دفع يدوية جديدة", callback_data="admin:pm_add")])
+    kb.append([
+        InlineKeyboardButton(text="⚡ مفتاح Chargily API", callback_data="admin:chg_cfg"),
+        InlineKeyboardButton(text=f"🔄 وضع Chargily ({chg_mode.upper()})", callback_data="admin:chg_mode"),
+    ])
+    if chg_key:
+        kb.append([InlineKeyboardButton(text="🗑️ إزالة مفتاح Chargily", callback_data="admin:chg_clear")])
+    kb.append([
+        InlineKeyboardButton(text=f"⭐ نجوم تيليجرام: {'إيقاف' if stars_on else 'تفعيل'}", callback_data="admin:stars_toggle"),
+        InlineKeyboardButton(text="💱 سعر النجمة (دج)", callback_data="admin:stars_cfg"),
+    ])
+    kb.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="menu:admin")])
+    text = "\n".join(lines)[:4000]
+    markup = InlineKeyboardMarkup(inline_keyboard=kb)
+    if edit:
+        try:
+            await msg_obj.edit_text(text, reply_markup=markup)
+            return
+        except Exception:
+            pass
+    await msg_obj.answer(text, reply_markup=markup)
+
+
+@seller_router.callback_query(F.data == "admin:paymethods")
+async def admin_paymethods_menu(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    await state.clear()
+    await _render_admin_paymethods(cb.message, await get_lang(cb.from_user.id), edit=True)
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data == "admin:pm_add")
+async def admin_pm_add_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    await state.set_state(AdminPayMethodFSM.add_name)
+    await cb.message.answer("💳 أرسل اسم طريقة الدفع الجديدة (مثال: <code>BaridiMob</code> أو <code>Wise</code> أو <code>USDT TRC20</code>):")
+    await cb.answer()
+
+
+@seller_router.message(AdminPayMethodFSM.add_name)
+async def admin_pm_add_name(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    name = (message.text or "").strip()[:80]
+    if not name:
+        return await message.answer("❌ يرجى إدخال اسم صحيح.")
+    await state.update_data(pm_name=name)
+    await state.set_state(AdminPayMethodFSM.add_details)
+    await message.answer(f"📝 أرسل تفاصيل/بيانات الدفع لـ <b>{esc(name)}</b> (مثل رقم RIP أو الحساب واسم المستلم):")
+
+
+@seller_router.message(AdminPayMethodFSM.add_details)
+async def admin_pm_add_details(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    details = (message.text or "").strip()[:1000]
+    if not details:
+        return await message.answer("❌ يرجى إدخال التفاصيل.")
+    data = await state.get_data()
+    name = str(data.get("pm_name", "Payment"))
+    await state.clear()
+    async with Session() as s:
+        s.add(PaymentMethod(name=name, details=details, is_active=True, sort_order=10))
+        await s.commit()
+    await message.answer(f"✅ تمت إضافة طريقة الدفع <b>{esc(name)}</b> بنجاح!")
+    await _render_admin_paymethods(message, await get_lang(message.from_user.id), edit=False)
+
+
+@seller_router.callback_query(F.data.startswith("admin:pm_toggle:"))
+async def admin_pm_toggle(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    pm_id = int(cb.data.split(":")[2])
+    async with Session() as s:
+        pm = await s.get(PaymentMethod, pm_id)
+        if not pm:
+            return await cb.answer("❌ غير موجود.", show_alert=True)
+        pm.is_active = not bool(pm.is_active)
+        await s.commit()
+    await cb.answer("✅ تم تحديث الحالة.")
+    await _render_admin_paymethods(cb.message, await get_lang(cb.from_user.id), edit=True)
+
+
+@seller_router.callback_query(F.data.startswith("admin:pm_edit:"))
+async def admin_pm_edit_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    pm_id = int(cb.data.split(":")[2])
+    await state.update_data(edit_pm_id=pm_id)
+    await state.set_state(AdminPayMethodFSM.edit_details)
+    await cb.message.answer(f"✏️ أرسل التفاصيل الجديدة لطريقة الدفع #{pm_id} (أو /cancel للإلغاء):")
+    await cb.answer()
+
+
+@seller_router.message(AdminPayMethodFSM.edit_details)
+async def admin_pm_edit_save(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    details = (message.text or "").strip()[:1000]
+    if not details:
+        return await message.answer("❌ يرجى إدخال تفاصيل صالحة.")
+    data = await state.get_data()
+    pm_id = int(data.get("edit_pm_id") or 0)
+    await state.clear()
+    async with Session() as s:
+        pm = await s.get(PaymentMethod, pm_id)
+        if pm:
+            pm.details = details
+            await s.commit()
+    await message.answer("✅ تم تحديث تفاصيل طريقة الدفع.")
+    await _render_admin_paymethods(message, await get_lang(message.from_user.id), edit=False)
+
+
+@seller_router.callback_query(F.data.startswith("admin:pm_del:"))
+async def admin_pm_delete(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    pm_id = int(cb.data.split(":")[2])
+    async with Session() as s:
+        pm = await s.get(PaymentMethod, pm_id)
+        if pm:
+            await s.delete(pm)
+            await s.commit()
+    await cb.answer("🗑️ تم الحذف.", show_alert=True)
+    await _render_admin_paymethods(cb.message, await get_lang(cb.from_user.id), edit=True)
+
+
+@seller_router.callback_query(F.data == "admin:chg_cfg")
+async def admin_chargily_cfg_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    await state.set_state(AdminPayMethodFSM.chargily_key)
+    await cb.message.answer(
+        "⚡ <b>إعداد Chargily Pay v2 (الذهبية / CIB)</b>\n\n"
+        "أرسل مفتاح <b>Secret API Key</b> من لوحة تحكم Chargily Pay (مثال: <code>test_sk_...</code> أو <code>live_sk_...</code>):\n"
+        "(سيُحفظ بشكل آمن في قاعدة البيانات)"
+    )
+    await cb.answer()
+
+
+@seller_router.message(AdminPayMethodFSM.chargily_key)
+async def admin_chargily_cfg_save(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    key = (message.text or "").strip()
+    if len(key) < 10:
+        return await message.answer("❌ المفتاح قصير جداً أو غير صالح. أعد الإرسال أو /cancel:")
+    await state.clear()
+    await set_setting("chargily_api_key", key)
+    if key.startswith("live_"):
+        await set_setting("chargily_mode", "live")
+    elif key.startswith("test_"):
+        await set_setting("chargily_mode", "test")
+    with suppress(Exception):
+        await message.delete()
+    await message.answer("✅ تم حفظ مفتاح Chargily Pay بنجاح (وتم حذف الرسالة لحماية المفتاح).")
+    await _render_admin_paymethods(message, await get_lang(message.from_user.id), edit=False)
+
+
+@seller_router.callback_query(F.data == "admin:chg_mode")
+async def admin_chargily_toggle_mode(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    _, mode = await get_chargily_config()
+    new_mode = "live" if mode == "test" else "test"
+    await set_setting("chargily_mode", new_mode)
+    await cb.answer(f"🔄 تم التبديل إلى وضع {new_mode.upper()}.", show_alert=True)
+    await _render_admin_paymethods(cb.message, await get_lang(cb.from_user.id), edit=True)
+
+
+@seller_router.callback_query(F.data == "admin:chg_clear")
+async def admin_chargily_clear(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    await set_setting("chargily_api_key", "")
+    await cb.answer("🗑️ تم إيقاف Chargily Pay وإزالة المفتاح.", show_alert=True)
+    await _render_admin_paymethods(cb.message, await get_lang(cb.from_user.id), edit=True)
+
+
+@seller_router.callback_query(F.data == "admin:stars_toggle")
+async def admin_stars_toggle(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    enabled, _ = await get_stars_config()
+    await set_setting("stars_enabled", "0" if enabled else "1")
+    await cb.answer("⭐ تم تحديث حالة نجوم تيليجرام.", show_alert=True)
+    await _render_admin_paymethods(cb.message, await get_lang(cb.from_user.id), edit=True)
+
+
+@seller_router.callback_query(F.data == "admin:stars_cfg")
+async def admin_stars_rate_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    await state.set_state(AdminPayMethodFSM.stars_rate)
+    await cb.message.answer(f"⭐ أرسل قيمة النجمة الواحدة بالدينار ({DEFAULT_CURRENCY}) — مثال: <code>5</code> (يعني 100 ⭐ = 500 {DEFAULT_CURRENCY}):")
+    await cb.answer()
+
+
+@seller_router.message(AdminPayMethodFSM.stars_rate)
+async def admin_stars_rate_save(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    rate = _parse_positive_float(message.text or "", allow_zero=False)
+    if rate is None or rate > 10000:
+        return await message.answer("❌ يرجى إدخال رقم صحيح أكبر من 0.")
+    await state.clear()
+    await set_setting("stars_dzd_rate", str(rate))
+    await message.answer(f"✅ تم ضبط سعر النجمة: <b>1 ⭐ = {rate:g} {DEFAULT_CURRENCY}</b>.")
+    await _render_admin_paymethods(message, await get_lang(message.from_user.id), edit=False)
+
+
+# ─── Admin Prepaid Recharge Vouchers Panel ───
+
+async def _render_admin_vouchers(msg_obj: Message, lang: str, edit: bool = True):
+    async with Session() as s:
+        vouchers = (
+            await s.execute(select(Voucher).order_by(Voucher.id.desc()).limit(15))
+        ).scalars().all()
+    lines = ["🎟️ <b>إدارة بطاقات وأكواد الشحن المسبقة (Vouchers)</b>\n"]
+    kb = [
+        [
+            InlineKeyboardButton(text="⚡ توليد 1000 دج", callback_data="admin:vch_quick:1000"),
+            InlineKeyboardButton(text="⚡ توليد 3000 دج", callback_data="admin:vch_quick:3000"),
+            InlineKeyboardButton(text="⚡ توليد 5000 دج", callback_data="admin:vch_quick:5000"),
+        ],
+        [InlineKeyboardButton(text="➕ إنشاء كود مخصص", callback_data="admin:vch_add")],
+    ]
+    if not vouchers:
+        lines.append("لا توجد أكواد شحن بعد.")
+    for v in vouchers:
+        ic = "✅" if (v.is_active and v.used_count < v.max_uses) else "🔒"
+        lines.append(f"{ic} <code>{esc(v.code)}</code> — <b>{v.amount:g} {DEFAULT_CURRENCY}</b> ({v.used_count}/{v.max_uses})")
+        kb.append([InlineKeyboardButton(text=f"🗑️ حذف {v.code}", callback_data=f"admin:vch_del:{v.id}")])
+    kb.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="menu:admin")])
+    text = "\n".join(lines)[:4000]
+    markup = InlineKeyboardMarkup(inline_keyboard=kb)
+    if edit:
+        try:
+            await msg_obj.edit_text(text, reply_markup=markup)
+            return
+        except Exception:
+            pass
+    await msg_obj.answer(text, reply_markup=markup)
+
+
+@seller_router.callback_query(F.data == "admin:vouchers")
+async def admin_vouchers_menu(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    await state.clear()
+    await _render_admin_vouchers(cb.message, await get_lang(cb.from_user.id), edit=True)
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("admin:vch_quick:"))
+async def admin_voucher_quick_gen(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    amt = float(cb.data.split(":")[2])
+    code = f"MKT-{secrets.token_hex(4).upper()}"
+    async with Session() as s:
+        s.add(Voucher(code=code, amount=amt, max_uses=1, created_by=cb.from_user.id))
+        await s.commit()
+    await cb.message.answer(
+        f"🎟️ <b>تم توليد كود شحن جديد!</b>\n\n"
+        f"🔑 الكود: <code>{code}</code>\n"
+        f"💰 القيمة: <b>{amt:g} {DEFAULT_CURRENCY}</b>\n"
+        f"🔢 الاستخدام: مرة واحدة (1)"
+    )
+    await _render_admin_vouchers(cb.message, await get_lang(cb.from_user.id), edit=False)
+    await cb.answer("✅ تم التوليد!")
+
+
+@seller_router.callback_query(F.data == "admin:vch_add")
+async def admin_voucher_add_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    await state.set_state(AdminVoucherFSM.create_spec)
+    await cb.message.answer(
+        "🎟️ أرسل بيانات كود الشحن بالصيغة:\n"
+        "<code>الكود المبلغ عدد_الاستخدامات</code>\n\n"
+        "مثال: <code>RAMADAN500 500 50</code>\n"
+        "أو اكتب <code>AUTO 2000 1</code> لتوليد كود عشوائي:"
+    )
+    await cb.answer()
+
+
+@seller_router.message(AdminVoucherFSM.create_spec)
+async def admin_voucher_add_save(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    parts = (message.text or "").strip().split()
+    if len(parts) < 2:
+        return await message.answer("❌ الصيغة غير صحيحة. مثال: <code>VIP2026 1000 10</code>")
+    raw_code = parts[0].upper()
+    code = f"MKT-{secrets.token_hex(4).upper()}" if raw_code == "AUTO" else raw_code[:50]
+    amt = _parse_positive_float(parts[1], allow_zero=False)
+    max_uses = _parse_int_range(parts[2], 1, 100000) if len(parts) >= 3 else 1
+    if amt is None or max_uses is None:
+        return await message.answer("❌ تأكد من صحة المبلغ وعدد الاستخدامات.")
+    async with Session() as s:
+        exists = (await s.execute(select(Voucher.id).where(Voucher.code == code))).scalar_one_or_none()
+        if exists:
+            return await message.answer("⚠️ هذا الكود موجود مسبقاً، اختر اسماً آخر.")
+        s.add(Voucher(code=code, amount=amt, max_uses=max_uses, created_by=message.from_user.id))
+        await s.commit()
+    await state.clear()
+    await message.answer(f"✅ تم إنشاء الكود <code>{esc(code)}</code> بقيمة <b>{amt:g} {DEFAULT_CURRENCY}</b> ({max_uses} استخدام).")
+    await _render_admin_vouchers(message, await get_lang(message.from_user.id), edit=False)
+
+
+@seller_router.callback_query(F.data.startswith("admin:vch_del:"))
+async def admin_voucher_delete(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    vid = int(cb.data.split(":")[2])
+    async with Session() as s:
+        v = await s.get(Voucher, vid)
+        if v:
+            await s.delete(v)
+            await s.commit()
+    await cb.answer("🗑️ تم حذف الكود.", show_alert=True)
+    await _render_admin_vouchers(cb.message, await get_lang(cb.from_user.id), edit=True)
+
+
+# ─── Admin Subscription Plans & Sub Coupons Panel ───
+
+async def _render_admin_plans(msg_obj: Message, lang: str, edit: bool = True):
+    async with Session() as s:
+        plans = await get_dynamic_plans(s)
+        sc_cnt = (await s.execute(select(func.count(SubCoupon.id)).where(SubCoupon.is_active.is_(True)))).scalar() or 0
+        pro_cnt = (await s.execute(select(func.count(Store.id)).where(Store.plan_tier == "pro"))).scalar() or 0
+        vip_cnt = (await s.execute(select(func.count(Store.id)).where(Store.plan_tier == "vip"))).scalar() or 0
+    lines = [
+        "👑 <b>إدارة باقات الاشتراك وكوبوناتها</b>\n",
+        f"📊 المشتركون حالياً: ⭐ Pro: <b>{pro_cnt}</b> | 👑 VIP: <b>{vip_cnt}</b>\n",
+    ]
+    kb = []
+    for key in ("pro_30", "vip_30", "vip_90"):
+        info = plans[key]
+        lines.append(
+            f"• <b>{esc(info['label'])}</b>: <b>{info['price']:g} {DEFAULT_CURRENCY}</b>"
+            + (f" | 🎁 هدية إعلانات: <b>{info['bonus']:g} {DEFAULT_CURRENCY}</b>" if info["tier"] == "vip" else "")
+        )
+        row = [InlineKeyboardButton(text=f"✏️ سعر {key}", callback_data=f"admin:plan_edit:price:{key}")]
+        if info["tier"] == "vip":
+            row.append(InlineKeyboardButton(text=f"🎁 هدية {key}", callback_data=f"admin:plan_edit:bonus:{key}"))
+        kb.append(row)
+    kb.append([InlineKeyboardButton(text=f"🎟️ كوبونات خصم الاشتراكات ({sc_cnt})", callback_data="admin:sub_coupons")])
+    kb.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="menu:admin")])
+    text = "\n".join(lines)
+    markup = InlineKeyboardMarkup(inline_keyboard=kb)
+    if edit:
+        try:
+            await msg_obj.edit_text(text, reply_markup=markup)
+            return
+        except Exception:
+            pass
+    await msg_obj.answer(text, reply_markup=markup)
+
+
+@seller_router.callback_query(F.data == "admin:plans")
+async def admin_plans_menu(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    await state.clear()
+    await _render_admin_plans(cb.message, await get_lang(cb.from_user.id), edit=True)
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("admin:plan_edit:"))
+async def admin_plan_edit_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    _, _, field, plan_key = cb.data.split(":")
+    if plan_key not in VIP_PLANS or field not in ("price", "bonus"):
+        return await cb.answer("❌ غير صالح.", show_alert=True)
+    await state.update_data(plan_edit_field=field, plan_edit_key=plan_key)
+    await state.set_state(AdminPlanConfigFSM.set_value)
+    lbl = "السعر الجديد" if field == "price" else "قيمة رصيد الإعلانات الهدية (أو 0 لإلغائه)"
+    await cb.message.answer(f"✏️ أرسل {lbl} للباقة <b>{plan_key}</b> ({DEFAULT_CURRENCY}):")
+    await cb.answer()
+
+
+@seller_router.message(AdminPlanConfigFSM.set_value)
+async def admin_plan_edit_save(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    data = await state.get_data()
+    field = data.get("plan_edit_field")
+    plan_key = data.get("plan_edit_key")
+    allow_zero = field == "bonus"
+    val = _parse_positive_float(message.text or "", allow_zero=allow_zero)
+    if val is None:
+        return await message.answer("❌ يرجى إدخال رقم صحيح.")
+    await state.clear()
+    await set_setting(f"plan_{field}_{plan_key}", str(val))
+    await message.answer(f"✅ تم تحديث {field} للباقة <b>{plan_key}</b> إلى <b>{val:g} {DEFAULT_CURRENCY}</b>.")
+    await _render_admin_plans(message, await get_lang(message.from_user.id), edit=False)
+
+
+async def _render_admin_sub_coupons(msg_obj: Message, lang: str, edit: bool = True):
+    async with Session() as s:
+        coupons = (await s.execute(select(SubCoupon).order_by(SubCoupon.id.desc()).limit(15))).scalars().all()
+    lines = ["🎟️ <b>كوبونات خصم اشتراكات المتاجر (Pro / VIP)</b>\n"]
+    kb = [[InlineKeyboardButton(text="➕ إنشاء كوبون اشتراك جديد", callback_data="admin:sc_add")]]
+    if not coupons:
+        lines.append("لا توجد كوبونات اشتراك بعد.")
+    for sc in coupons:
+        ic = "✅" if (sc.is_active and sc.used_count < sc.max_uses) else "🔒"
+        lines.append(f"{ic} <code>{esc(sc.code)}</code> — خصم <b>{sc.discount_percent}%</b> ({sc.used_count}/{sc.max_uses})")
+        kb.append([InlineKeyboardButton(text=f"🗑️ حذف {sc.code}", callback_data=f"admin:sc_del:{sc.id}")])
+    kb.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="admin:plans")])
+    text = "\n".join(lines)[:4000]
+    markup = InlineKeyboardMarkup(inline_keyboard=kb)
+    if edit:
+        try:
+            await msg_obj.edit_text(text, reply_markup=markup)
+            return
+        except Exception:
+            pass
+    await msg_obj.answer(text, reply_markup=markup)
+
+
+@seller_router.callback_query(F.data == "admin:sub_coupons")
+async def admin_sub_coupons_menu(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    await state.clear()
+    await _render_admin_sub_coupons(cb.message, await get_lang(cb.from_user.id), edit=True)
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data == "admin:sc_add")
+async def admin_sub_coupon_add_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    await state.set_state(AdminSubCouponFSM.create_spec)
+    await cb.message.answer(
+        "🎟️ أرسل بيانات كوبون الاشتراك بالصيغة:\n"
+        "<code>الكود نسبة_الخصم عدد_الاستخدامات</code>\n\n"
+        "مثال: <code>PRO30 30 100</code> (خصم 30% لـ 100 متجر):"
+    )
+    await cb.answer()
+
+
+@seller_router.message(AdminSubCouponFSM.create_spec)
+async def admin_sub_coupon_add_save(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    parts = (message.text or "").strip().split()
+    if len(parts) < 2:
+        return await message.answer("❌ الصيغة غير صحيحة. مثال: <code>VIP25 25 50</code>")
+    code = parts[0].upper()[:50]
+    pct = _parse_int_range(parts[1], 1, 95)
+    max_uses = _parse_int_range(parts[2], 1, 100000) if len(parts) >= 3 else 100
+    if pct is None or max_uses is None:
+        return await message.answer("❌ نسبة الخصم يجب أن تكون بين 1 و 95.")
+    async with Session() as s:
+        exists = (await s.execute(select(SubCoupon.id).where(SubCoupon.code == code))).scalar_one_or_none()
+        if exists:
+            return await message.answer("⚠️ هذا الكوبون موجود مسبقاً.")
+        s.add(SubCoupon(code=code, discount_percent=pct, max_uses=max_uses))
+        await s.commit()
+    await state.clear()
+    await message.answer(f"✅ تم إنشاء كوبون الاشتراك <code>{esc(code)}</code> بخصم <b>{pct}%</b> ({max_uses} استخدام).")
+    await _render_admin_sub_coupons(message, await get_lang(message.from_user.id), edit=False)
+
+
+@seller_router.callback_query(F.data.startswith("admin:sc_del:"))
+async def admin_sub_coupon_delete(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    sc_id = int(cb.data.split(":")[2])
+    async with Session() as s:
+        sc = await s.get(SubCoupon, sc_id)
+        if sc:
+            await s.delete(sc)
+            await s.commit()
+    await cb.answer("🗑️ تم حذف الكوبون.", show_alert=True)
+    await _render_admin_sub_coupons(cb.message, await get_lang(cb.from_user.id), edit=True)
+
+
 # ════════════════════════════════════════════════════════════════════
 # 9. BACKGROUND TASKS, ERROR HANDLER & ENTRYPOINT (main.py)
 # ════════════════════════════════════════════════════════════════════
@@ -8906,6 +10816,130 @@ async def daily_backup_task(bot: Bot) -> None:
             logger.exception("Unexpected error in daily_backup_task")
 
 
+async def subscription_lifecycle_task(bot: Bot) -> None:
+    """Handle 3d/24h expiry reminders, wallet auto-renewals, and 48h grace downgrades."""
+    await asyncio.sleep(60)
+    while True:
+        try:
+            now = utcnow()
+            grace_delta = timedelta(hours=SUB_GRACE_HOURS)
+            notifications: list[tuple[int, str, Optional[InlineKeyboardMarkup]]] = []
+
+            async with Session() as s:
+                plans = await get_dynamic_plans(s)
+                stores = (
+                    await s.execute(
+                        select(Store).where(
+                            Store.plan_tier.in_(["pro", "vip"]),
+                            Store.plan_expires_at.is_not(None),
+                        )
+                    )
+                ).scalars().all()
+
+                changed = False
+                for st in stores:
+                    exp = st.plan_expires_at
+                    if not exp:
+                        continue
+                    rem = exp - now
+                    renew_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="👑 تجديد الاشتراك الآن", callback_data=f"st_vip:{st.id}")
+                    ]])
+
+                    # 1) 3-day reminder
+                    if timedelta(days=1) < rem <= timedelta(days=3) and not st.expiry_reminded_3d:
+                        st.expiry_reminded_3d = True
+                        changed = True
+                        notifications.append((
+                            st.owner_tg_id,
+                            f"⏳ <b>تذكير باشتراك متجرك ({esc(st.name)})</b>\n\n"
+                            f"باقة <b>{st.plan_tier.upper()}</b> ستنتهي خلال أقل من 3 أيام (<b>{exp.strftime('%Y-%m-%d')}</b>).\n"
+                            f"{'♻️ التجديد التلقائي من المحفظة مفعّل.' if st.auto_renew else '💡 جدد الآن للحفاظ على النشر المباشر ومزايا باقتك.'}",
+                            renew_kb,
+                        ))
+                    # 2) 24-hour reminder
+                    elif timedelta(0) < rem <= timedelta(days=1) and not st.expiry_reminded_1d:
+                        st.expiry_reminded_1d = True
+                        changed = True
+                        notifications.append((
+                            st.owner_tg_id,
+                            f"⚠️ <b>تنبيه عاجل — اشتراك متجر {esc(st.name)}</b>\n\n"
+                            f"تبقّى أقل من <b>24 ساعة</b> على انتهاء باقة <b>{st.plan_tier.upper()}</b>!\n"
+                            f"{'♻️ سيتم التجديد تلقائياً من محفظتك عند الانتهاء إذا كان الرصيد كافياً.' if st.auto_renew else '💡 جدد الآن أو فعّل التجديد التلقائي من المحفظة.'}",
+                            renew_kb,
+                        ))
+                    # 3) Expired: try auto-renew if enabled
+                    elif rem <= timedelta(0) and st.auto_renew:
+                        plan_key = "vip_30" if st.plan_tier == "vip" else "pro_30"
+                        plan_info = plans[plan_key]
+                        price = float(plan_info["price"])
+                        res = await s.execute(
+                            update(User)
+                            .where(User.tg_id == st.owner_tg_id, User.ad_credits >= price)
+                            .values(ad_credits=User.ad_credits - price)
+                        )
+                        if res.rowcount > 0:
+                            u = await ensure_user(s, st.owner_tg_id, DEFAULT_LANG)
+                            s.add(WalletTransaction(
+                                user_tg_id=st.owner_tg_id,
+                                tx_type="subscription",
+                                amount=-round(price, 2),
+                                balance_after=float(u.ad_credits or 0.0),
+                                description=f"♻️ تجديد تلقائي لباقة {plan_info['label']} ({st.name})",
+                            ))
+                            until_str, bonus, tier = await activate_store_plan(s, st, plan_key, user=u)
+                            changed = True
+                            b_txt = f"\n🎁 هدية إعلانات مضافة: <b>+{bonus:g} {DEFAULT_CURRENCY}</b>" if bonus > 0 else ""
+                            notifications.append((
+                                st.owner_tg_id,
+                                f"♻️ <b>تم التجديد التلقائي لاشتراك متجر {esc(st.name)} بنجاح!</b>\n\n"
+                                f"👑 الباقة: <b>{tier.upper()}</b> | 💳 المخصوم: <b>{price:g} {DEFAULT_CURRENCY}</b>\n"
+                                f"📅 صالح حتى: <b>{until_str}</b>{b_txt}",
+                                None,
+                            ))
+                        else:
+                            st.auto_renew = False
+                            changed = True
+                            notifications.append((
+                                st.owner_tg_id,
+                                f"⚠️ <b>فشل التجديد التلقائي لمتجر {esc(st.name)}</b>\n\n"
+                                f"رصيد محفظتك غير كافٍ ({price:g} {DEFAULT_CURRENCY}). لديك <b>فترة سماح {SUB_GRACE_HOURS} ساعة</b> لتجديد الاشتراك دون فقدان مزاياك.",
+                                renew_kb,
+                            ))
+                    # 4) Grace period ended -> clean downgrade to Free (NEVER deletes products!)
+                    elif (exp + grace_delta) <= now:
+                        old_tier = st.plan_tier.upper()
+                        st.plan_tier = "free"
+                        st.auto_approve = False
+                        st.vip_until = None
+                        st.expiry_reminded_3d = False
+                        st.expiry_reminded_1d = False
+                        changed = True
+                        notifications.append((
+                            st.owner_tg_id,
+                            f"📌 <b>انتهت باقة {old_tier} لمتجر {esc(st.name)}</b>\n\n"
+                            f"تم تحويل المتجر إلى الباقة المجانية (Free) بعد انتهاء فترة السماح.\n"
+                            f"🛡️ جميع منتجاتك الحالية محفوظة ولم يُحذف أي شيء. يمكنك التجديد في أي وقت:",
+                            renew_kb,
+                        ))
+
+                if changed:
+                    await s.commit()
+
+            for uid, txt, kb in notifications:
+                with suppress(Exception):
+                    await bot.send_message(uid, txt, reply_markup=kb)
+                    await asyncio.sleep(0.05)
+
+            await asyncio.sleep(21600)
+        except asyncio.CancelledError:
+            logger.info("subscription_lifecycle_task cancelled")
+            raise
+        except Exception:
+            logger.exception("Unexpected error in subscription_lifecycle_task")
+            await asyncio.sleep(600)
+
+
 async def global_error_handler(event: ErrorEvent) -> bool:
     logger.exception("Unhandled error: %s", event.exception)
     upd = event.update
@@ -8963,14 +10997,15 @@ async def main() -> None:
 
         dp = Dispatcher(storage=MemoryStorage())
         flood_mw = AntiFloodMiddleware()
-        dp.message.outer_middleware(flood_mw)
-        dp.callback_query.outer_middleware(flood_mw)
+        dp.message.outer_middleware.register(flood_mw)
+        dp.callback_query.outer_middleware.register(flood_mw)
         dp.include_router(buyer_router)
         dp.include_router(seller_router)
         dp.errors.register(global_error_handler)
 
         bg_tasks.append(asyncio.create_task(abandoned_cart_task(bot)))
         bg_tasks.append(asyncio.create_task(daily_backup_task(bot)))
+        bg_tasks.append(asyncio.create_task(subscription_lifecycle_task(bot)))
         await dp.start_polling(bot)
 
     finally:
@@ -8990,3 +11025,6 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logger.info("Stopped")
+    except Exception:
+        logger.exception("Fatal startup error")
+        raise
