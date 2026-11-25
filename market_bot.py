@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 import csv
 import html
+import importlib
+import importlib.util
 import io
 import json
 import logging
@@ -19,7 +21,10 @@ import math
 import os
 import re
 import secrets
+import site
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -28,8 +33,45 @@ from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Final, Optional
 
-import qrcode
-from aiogram import Bot, Dispatcher, F, Router
+
+def _ensure_runtime_deps() -> None:
+    """Auto-install missing runtime dependencies (greenlet, aiosqlite, pillow, etc.) on minimal hosts."""
+    required = (
+        ("aiogram", "aiogram"),
+        ("sqlalchemy", "sqlalchemy"),
+        ("greenlet", "greenlet"),
+        ("aiosqlite", "aiosqlite"),
+        ("qrcode", "qrcode"),
+        ("PIL", "pillow"),
+    )
+    missing = [pkg for mod, pkg in required if importlib.util.find_spec(mod) is None]
+    if not missing:
+        return
+    print(f"[bootstrap] Installing missing dependencies: {' '.join(missing)}", flush=True)
+    install_cmds = (
+        [sys.executable, "-m", "pip", "install", "--no-cache-dir", *missing],
+        [sys.executable, "-m", "pip", "install", "--user", "--no-cache-dir", *missing],
+        [sys.executable, "-m", "pip", "install", "--user", "--break-system-packages", "--no-cache-dir", *missing],
+    )
+    for cmd in install_cmds:
+        try:
+            subprocess.check_call(cmd)
+            break
+        except Exception:
+            continue
+    with suppress(Exception):
+        user_site = site.getusersitepackages()
+        if user_site and user_site not in sys.path:
+            sys.path.append(user_site)
+    importlib.invalidate_caches()
+
+
+_ensure_runtime_deps()
+
+import aiosqlite  # noqa: F401, E402
+import greenlet  # noqa: F401, E402
+import qrcode  # noqa: E402
+from aiogram import Bot, Dispatcher, F, Router  # noqa: E402
 try:
     from aiogram import BaseMiddleware
 except ImportError:
