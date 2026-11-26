@@ -450,6 +450,61 @@ def get_company_wilaya_rate(company_code: str, wilaya_code: str) -> tuple[float,
     zone = get_wilaya_zone(wilaya_code)
     return co["zone_rates"].get(zone, (700.0, 450.0))
 
+
+# ─── Seller Website Creation Studio Catalog ───
+
+WEBSITE_PACKAGES: Final[dict[str, dict[str, Any]]] = {
+    "landing": {
+        "code": "landing",
+        "emoji": "⚡",
+        "title": "صفحة هبوط احترافية (Landing Page)",
+        "price_hint": "ابتداءً من 10,000 دج",
+        "days_hint": "2 – 4 أيام",
+        "desc": "صفحة سريعة عالية التحويل لإعلانات Facebook و TikTok مع استمارة طلب مباشرة لـ 58 ولاية وربط Pixel.",
+    },
+    "ecommerce": {
+        "code": "ecommerce",
+        "emoji": "🛍️",
+        "title": "متجر إلكتروني متكامل (Full Store)",
+        "price_hint": "ابتداءً من 25,000 دج",
+        "days_hint": "5 – 10 أيام",
+        "desc": "متجر متكامل بمنتجات غير محدودة، سلة مشتريات، لوحة تحكم، أسعار توصيل 58 ولاية، كوبونات خصم وإحصائيات.",
+    },
+    "custom_pro": {
+        "code": "custom_pro",
+        "emoji": "👑",
+        "title": "موقع فاخر مخصص + ربط ذكي (VIP Pro)",
+        "price_hint": "حسب المواصفات والاتفاق",
+        "days_hint": "7 – 15 يوماً",
+        "desc": "هوية بصرية حصرية، دفع إلكتروني (EDAHABIA / CIB)، ربط تلقائي مع بوت تيليجرام وشركات التوصيل ودعم أولوي.",
+    },
+}
+
+WEBSITE_FEATURES: Final[dict[str, str]] = {
+    "wilayas58": "🚚 توصيل 58 ولاية + Stop Desk",
+    "chargily": "⚡ دفع إلكتروني EDAHABIA / CIB",
+    "pixel": "📊 ربط Facebook & TikTok Pixel",
+    "domain": "🌍 دومين احترافي (.com / .dz)",
+    "multilang": "🌐 متعدد اللغات (عربي / فرنسي)",
+    "bot_sync": "🤖 ربط مباشر مع بوت تيليجرام",
+}
+
+WEBSITE_BUDGETS: Final[list[str]] = [
+    "💵 أقل من 15,000 دج",
+    "💰 15,000 – 35,000 دج",
+    "💎 35,000 – 70,000 دج",
+    "👑 أكثر من 70,000 دج",
+    "🤝 حسب الاتفاق مع المطور",
+]
+
+WEBSITE_STATUS_LABELS: Final[dict[str, str]] = {
+    "pending": "⏳ قيد المراجعة",
+    "negotiating": "💬 قيد النقاش والتسعير",
+    "in_progress": "🛠️ جاري التنفيذ",
+    "completed": "✅ مكتمل ومسلّم",
+    "cancelled": "❌ ملغي",
+}
+
 MAX_STORE_NAME_LEN: Final[int] = 100
 MAX_STORE_BIO_LEN: Final[int] = 500
 MAX_STORE_SLUG_LEN: Final[int] = 50
@@ -1084,6 +1139,8 @@ TEXTS: dict[str, dict[str, str]] = {
         "btn_store_deposit": "💵 إعدادات العربون (COD)",
         "btn_store_plans": "👑 باقات الاشتراك (Pro / VIP)",
         "btn_delivery_companies": "🚚 شركات التوصيل",
+        "btn_request_website": "🌐 طلب إنشاء موقع",
+        "btn_admin_websites": "🌐 طلبات المواقع",
         "dup_receipt_err": "⚠️ <b>تم استخدام صورة هذا الإيصال مسبقاً!</b>\nيرجى إرسال صورة إيصال دفع جديد وصالح.",
     },
     "en": {
@@ -1457,6 +1514,8 @@ TEXTS: dict[str, dict[str, str]] = {
         "btn_store_deposit": "💵 Deposit Settings (COD)",
         "btn_store_plans": "👑 Subscription Plans (Pro/VIP)",
         "btn_delivery_companies": "🚚 Delivery Companies",
+        "btn_request_website": "🌐 Request a Website",
+        "btn_admin_websites": "🌐 Website Requests",
         "dup_receipt_err": "⚠️ <b>This payment receipt was already submitted!</b>\nPlease send a new valid receipt screenshot.",
     },
     "fr": {
@@ -1830,6 +1889,8 @@ TEXTS: dict[str, dict[str, str]] = {
         "btn_store_deposit": "💵 Paramètres d'acompte (COD)",
         "btn_store_plans": "👑 Forfaits (Pro / VIP)",
         "btn_delivery_companies": "🚚 Sociétés de livraison",
+        "btn_request_website": "🌐 Demander un site web",
+        "btn_admin_websites": "🌐 Demandes de sites web",
         "dup_receipt_err": "⚠️ <b>Ce reçu de paiement a déjà été utilisé !</b>\nVeuillez envoyer une nouvelle capture de paiement valide.",
     },
 }
@@ -2269,6 +2330,42 @@ class SubCoupon(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class WebsiteRequest(Base):
+    __tablename__ = "website_requests"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    store_id: Mapped[int] = mapped_column(Integer, index=True)
+    seller_tg_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    store_name: Mapped[str] = mapped_column(String(120), default="")
+    package_code: Mapped[str] = mapped_column(String(30), default="ecommerce")
+    features: Mapped[str] = mapped_column(Text, default="")
+    budget: Mapped[str] = mapped_column(String(80), default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    contact_phone: Mapped[str] = mapped_column(String(60), default="")
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    quoted_price: Mapped[float] = mapped_column(Float, default=0.0)
+    delivery_days: Mapped[int] = mapped_column(Integer, default=0)
+    live_url: Mapped[str] = mapped_column(String(300), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    messages = relationship("WebsiteMessage", back_populates="request", cascade="all, delete-orphan")
+
+
+class WebsiteMessage(Base):
+    __tablename__ = "website_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    request_id: Mapped[int] = mapped_column(ForeignKey("website_requests.id", ondelete="CASCADE"), index=True)
+    sender_role: Mapped[str] = mapped_column(String(20), default="seller")  # "seller" | "developer"
+    sender_tg_id: Mapped[int] = mapped_column(BigInteger)
+    text: Mapped[str] = mapped_column(Text, default="")
+    photo_file_id: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    request = relationship("WebsiteRequest", back_populates="messages")
+
+
 async def _ensure_schema_columns(conn) -> None:
     """Safely add new columns to existing tables BEFORE/AFTER create_all so upgrades never fail on new indexes."""
     migrations = [
@@ -2646,6 +2743,22 @@ class AdminStoreSearchFSM(StatesGroup):
 
 class DeliveryCalcFSM(StatesGroup):
     dims = State()
+
+
+class WebsiteReqFSM(StatesGroup):
+    details = State()
+    phone = State()
+
+
+class WebsiteChatFSM(StatesGroup):
+    message = State()
+
+
+class AdminWebDevFSM(StatesGroup):
+    reply = State()
+    quote = State()
+    deliver_url = State()
+    dev_username = State()
 
 
 async def get_lang(tg_id: int) -> str:
@@ -3880,7 +3993,8 @@ async def send_store_dashboard(msg_obj, store_id: int, lang: str):
          InlineKeyboardButton(text=t(lang, "btn_share"), callback_data=f"st_share:{store.id}")],
         [InlineKeyboardButton(text=t(lang, "btn_seller_broadcast"), callback_data=f"st_broadcast:{store.id}"),
          InlineKeyboardButton(text=t(lang, "btn_settings"), callback_data=f"st_settings:{store.id}")],
-        [InlineKeyboardButton(text=t(lang, "btn_seller_guide"), callback_data=f"st_guide:{store.id}")],
+        [InlineKeyboardButton(text=t(lang, "btn_request_website"), callback_data=f"st_web_hub:{store.id}"),
+         InlineKeyboardButton(text=t(lang, "btn_seller_guide"), callback_data=f"st_guide:{store.id}")],
     ]
     if total_stores < max_allowed:
         kb.append([InlineKeyboardButton(text=t(lang, "add_new_store"), callback_data="nav:become_seller")])
@@ -3898,22 +4012,30 @@ async def _build_admin_panel_kb(lang: str) -> InlineKeyboardMarkup:
         bads = (await s.execute(select(func.count(BotAd.id)).where(BotAd.status == "pending"))).scalar()
         adreqs = (await s.execute(select(func.count(AdRequest.id)).where(AdRequest.status == "pending"))).scalar()
         bl_cnt = (await s.execute(select(func.count(BlacklistedEntry.id)))).scalar()
+        web_cnt = (
+            await s.execute(
+                select(func.count(WebsiteRequest.id)).where(
+                    WebsiteRequest.status.in_(("pending", "negotiating", "in_progress"))
+                )
+            )
+        ).scalar() or 0
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"{t(lang, 'btn_pending')} ({c})", callback_data="admin:pending"),
          InlineKeyboardButton(text=f"{t(lang, 'btn_reports')} ({r})", callback_data="admin:reports")],
         [InlineKeyboardButton(text=f"{t(lang, 'btn_tickets')} ({tck})", callback_data="admin:tickets"),
-         InlineKeyboardButton(text=t(lang, "btn_manage_stores"), callback_data="admin:stores")],
-        [InlineKeyboardButton(text=t(lang, "btn_manage_cats"), callback_data="admin:cats"),
-         InlineKeyboardButton(text=t(lang, "btn_global_stats"), callback_data="admin:gstats")],
-        [InlineKeyboardButton(text=f"{t(lang, 'btn_manage_bot_ads')} ({bads})", callback_data="admin:botads"),
-         InlineKeyboardButton(text=f"{t(lang, 'btn_manage_ad_requests')} ({adreqs})", callback_data="admin:adreqs")],
-        [InlineKeyboardButton(text=t(lang, "btn_admin_paymethods"), callback_data="admin:paymethods"),
-         InlineKeyboardButton(text=t(lang, "btn_admin_vouchers"), callback_data="admin:vouchers")],
-        [InlineKeyboardButton(text=t(lang, "btn_admin_plans"), callback_data="admin:plans"),
-         InlineKeyboardButton(text=f"{t(lang, 'btn_admin_blacklist')} ({bl_cnt})", callback_data="admin:blacklist")],
-        [InlineKeyboardButton(text=t(lang, "btn_admin_channel"), callback_data="admin:channel"),
-         InlineKeyboardButton(text=t(lang, "btn_admin_backup"), callback_data="admin:backup")],
-        [InlineKeyboardButton(text=t(lang, "btn_broadcast"), callback_data="admin:broadcast")],
+         InlineKeyboardButton(text=f"{t(lang, 'btn_admin_websites')} ({web_cnt})", callback_data="admin:webreqs")],
+        [InlineKeyboardButton(text=t(lang, "btn_manage_stores"), callback_data="admin:stores"),
+         InlineKeyboardButton(text=t(lang, "btn_manage_cats"), callback_data="admin:cats")],
+        [InlineKeyboardButton(text=t(lang, "btn_global_stats"), callback_data="admin:gstats"),
+         InlineKeyboardButton(text=f"{t(lang, 'btn_manage_bot_ads')} ({bads})", callback_data="admin:botads")],
+        [InlineKeyboardButton(text=f"{t(lang, 'btn_manage_ad_requests')} ({adreqs})", callback_data="admin:adreqs"),
+         InlineKeyboardButton(text=t(lang, "btn_admin_paymethods"), callback_data="admin:paymethods")],
+        [InlineKeyboardButton(text=t(lang, "btn_admin_vouchers"), callback_data="admin:vouchers"),
+         InlineKeyboardButton(text=t(lang, "btn_admin_plans"), callback_data="admin:plans")],
+        [InlineKeyboardButton(text=f"{t(lang, 'btn_admin_blacklist')} ({bl_cnt})", callback_data="admin:blacklist"),
+         InlineKeyboardButton(text=t(lang, "btn_admin_channel"), callback_data="admin:channel")],
+        [InlineKeyboardButton(text=t(lang, "btn_admin_backup"), callback_data="admin:backup"),
+         InlineKeyboardButton(text=t(lang, "btn_broadcast"), callback_data="admin:broadcast")],
         [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="menu:home")],
     ])
 
@@ -11690,6 +11812,965 @@ async def admin_sub_coupon_delete(cb: CallbackQuery):
             await s.commit()
     await cb.answer("🗑️ تم حذف الكوبون.", show_alert=True)
     await _render_admin_sub_coupons(cb.message, await get_lang(cb.from_user.id), edit=True)
+
+
+# ════════════════════════════════════════════════════════════════════
+# 8.5 SELLER WEBSITE CREATION STUDIO & DIRECT DEVELOPER CHAT
+# ════════════════════════════════════════════════════════════════════
+
+def _format_web_features_list(raw_codes: str) -> str:
+    codes = [c.strip() for c in (raw_codes or "").split(",") if c.strip()]
+    if not codes:
+        return "لم يتم تحديد إضافات خاصة"
+    labels = [WEBSITE_FEATURES.get(c, c) for c in codes]
+    return "\n".join(f"   • {lbl}" for lbl in labels)
+
+
+def _format_web_req_card(req: WebsiteRequest, msg_count: int = 0, for_dev: bool = False) -> str:
+    pkg = WEBSITE_PACKAGES.get(req.package_code) or WEBSITE_PACKAGES["ecommerce"]
+    st_lbl = WEBSITE_STATUS_LABELS.get(req.status, req.status)
+    quote_block = ""
+    if req.quoted_price and req.quoted_price > 0:
+        days_part = f" | ⏱️ المدة: <b>{req.delivery_days} أيام</b>" if req.delivery_days else ""
+        quote_block = f"\n✦ 💎 <b>عرض سعر المطور:</b> <b>{req.quoted_price:g} {DEFAULT_CURRENCY}</b>{days_part}"
+    url_block = f"\n✦ 🌍 <b>رابط الموقع الجاهز:</b> {esc(req.live_url)}" if req.live_url else ""
+    dev_meta = (
+        f"\n✦ 👤 <b>البائع (ID):</b> <code>{req.seller_tg_id}</code>"
+        if for_dev
+        else ""
+    )
+    return (
+        f"🌐✨ <b>طلب إنشاء موقع إلكتروني #{req.id}</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"✦ 🏪 <b>المتجر:</b> {esc(req.store_name)}{dev_meta}\n"
+        f"✦ 📌 <b>الحالة:</b> {st_lbl}\n"
+        f"✦ 📦 <b>الباقة:</b> {pkg['emoji']} <b>{pkg['title']}</b>\n"
+        f"✦ 💰 <b>الميزانية المقترحة:</b> {esc(req.budget or '-')}\n"
+        f"✦ 📞 <b>هاتف التواصل:</b> <code>{esc(req.contact_phone or '-')}</code>{quote_block}{url_block}\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"✨ <b>المميزات المطلوبة:</b>\n{_format_web_features_list(req.features)}\n\n"
+        f"📝 <b>ملاحظات وتفاصيل الدومين/الألوان:</b>\n<i>{esc(req.notes or 'لا توجد ملاحظات إضافية')}</i>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"💬 <b>عدد رسائل المحادثة:</b> {msg_count} | 📅 {req.created_at.strftime('%Y-%m-%d %H:%M')}"
+    )
+
+
+async def _get_dev_username() -> str:
+    val = (await get_setting("developer_username", "")).strip().lstrip("@")
+    return val
+
+
+async def _render_seller_web_hub(msg_obj: Message, uid: int, sid: int, lang: str, edit: bool = True):
+    async with Session() as s:
+        st = await s.get(Store, sid)
+        reqs = (
+            await s.execute(
+                select(WebsiteRequest)
+                .where(WebsiteRequest.store_id == sid, WebsiteRequest.seller_tg_id == uid)
+                .order_by(WebsiteRequest.id.desc())
+            )
+        ).scalars().all()
+    if not st:
+        return
+    dev_user = await _get_dev_username()
+    pkg_lines = []
+    for p in WEBSITE_PACKAGES.values():
+        pkg_lines.append(
+            f"{p['emoji']} <b>{p['title']}</b>\n"
+            f"   ✦ {p['price_hint']} • ⏱️ {p['days_hint']}\n"
+            f"   <i>{p['desc']}</i>"
+        )
+    active_reqs = [r for r in reqs if r.status in ("pending", "negotiating", "in_progress")]
+    latest_active = active_reqs[0] if active_reqs else None
+    text = (
+        f"🌐✨ <b>استوديو إنشاء المواقع الإلكترونية — {esc(st.name)}</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"امتلك <b>موقعاً إلكترونياً احترافياً خاصاً بمتجرك</b> يرفع ثقة زبائنك ويضاعف مبيعاتك، وتواصل مباشرة مع <b>المطور</b> خطوة بخطوة! 🚀\n\n"
+        + "\n\n".join(pkg_lines)
+        + "\n━━━━━━━━━━━━━━━\n"
+        + f"📊 <b>طلباتك الحالية:</b> {len(reqs)} (نشطة: {len(active_reqs)})"
+    )
+    rows = [
+        [InlineKeyboardButton(text="🚀 طلب إنشاء موقع جديد الآن", callback_data=f"st_web_new:{sid}")],
+    ]
+    if reqs:
+        rows.append([
+            InlineKeyboardButton(
+                text=f"📋 طلباتي ومحادثاتي مع المطور ({len(reqs)})",
+                callback_data=f"st_web_list:{sid}",
+            )
+        ])
+    if latest_active:
+        rows.append([
+            InlineKeyboardButton(
+                text=f"💬 متابعة المحادثة مع المطور (طلب #{latest_active.id})",
+                callback_data=f"st_web_chat:{latest_active.id}",
+            )
+        ])
+    if dev_user:
+        rows.append([
+            InlineKeyboardButton(
+                text="✈️ مراسلة المطور مباشرة على تيليجرام",
+                url=f"https://t.me/{dev_user}",
+            )
+        ])
+    rows.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=f"mngstore:{sid}")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    if edit:
+        try:
+            await msg_obj.edit_text(text, reply_markup=kb)
+            return
+        except Exception:
+            pass
+    await msg_obj.answer(text, reply_markup=kb)
+
+
+@seller_router.callback_query(F.data.startswith("st_web_hub:"))
+async def seller_web_hub(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    sid = int(cb.data.split(":")[1])
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    lang = await get_lang(cb.from_user.id)
+    await _render_seller_web_hub(cb.message, cb.from_user.id, sid, lang, edit=True)
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("st_web_new:"))
+async def seller_web_new_start(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    sid = int(cb.data.split(":")[1])
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    await state.update_data(web_sid=sid, web_feats=[])
+    text = (
+        "🚀✨ <b>طلب إنشاء موقع إلكتروني — الخطوة 1 من 5</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        "اختر <b>نوع الموقع / الباقة</b> التي تناسب مشروعك:"
+    )
+    rows = []
+    for code, p in WEBSITE_PACKAGES.items():
+        rows.append([
+            InlineKeyboardButton(
+                text=f"{p['emoji']} {p['title']} ({p['price_hint']})",
+                callback_data=f"st_web_pkg:{sid}:{code}",
+            )
+        ])
+    rows.append([InlineKeyboardButton(text="↩️ إلغاء ورجوع", callback_data=f"st_web_hub:{sid}")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    try:
+        await cb.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb)
+    await cb.answer()
+
+
+def _build_web_features_kb(sid: int, selected: list[str]) -> InlineKeyboardMarkup:
+    rows = []
+    sel_set = set(selected)
+    for fkey, flbl in WEBSITE_FEATURES.items():
+        mark = "✅" if fkey in sel_set else "⬜"
+        rows.append([
+            InlineKeyboardButton(text=f"{mark} {flbl}", callback_data=f"st_web_feat:{sid}:{fkey}")
+        ])
+    rows.append([
+        InlineKeyboardButton(
+            text=f"➡️ التالي ({len(sel_set)} ميزة مختارة)",
+            callback_data=f"st_web_feats_done:{sid}",
+        )
+    ])
+    rows.append([InlineKeyboardButton(text="↩️ رجوع للباقات", callback_data=f"st_web_new:{sid}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@seller_router.callback_query(F.data.startswith("st_web_pkg:"))
+async def seller_web_pick_package(cb: CallbackQuery, state: FSMContext):
+    _, sid_str, pkg_code = cb.data.split(":", 2)
+    sid = int(sid_str)
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    pkg = WEBSITE_PACKAGES.get(pkg_code)
+    if not pkg:
+        return await cb.answer("❌ باقة غير صالحة.", show_alert=True)
+    default_feats = ["wilayas58", "pixel"] if pkg_code == "landing" else ["wilayas58", "domain"]
+    await state.update_data(web_sid=sid, web_pkg=pkg_code, web_feats=default_feats)
+    text = (
+        f"✨⚙️ <b>الخطوة 2 من 5 — اختر المميزات الإضافية</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"📦 الباقة المختارة: {pkg['emoji']} <b>{pkg['title']}</b>\n\n"
+        f"اضغط على أي ميزة لتحديدها أو إلغائها، ثم اضغط <b>«➡️ التالي»</b>:"
+    )
+    kb = _build_web_features_kb(sid, default_feats)
+    try:
+        await cb.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb)
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("st_web_feat:"))
+async def seller_web_toggle_feature(cb: CallbackQuery, state: FSMContext):
+    _, sid_str, fkey = cb.data.split(":", 2)
+    sid = int(sid_str)
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    if fkey not in WEBSITE_FEATURES:
+        return await cb.answer()
+    data = await state.get_data()
+    feats = list(data.get("web_feats") or [])
+    if fkey in feats:
+        feats.remove(fkey)
+    else:
+        feats.append(fkey)
+    await state.update_data(web_sid=sid, web_feats=feats)
+    with suppress(Exception):
+        await cb.message.edit_reply_markup(reply_markup=_build_web_features_kb(sid, feats))
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("st_web_feats_done:"))
+async def seller_web_choose_budget(cb: CallbackQuery, state: FSMContext):
+    sid = int(cb.data.split(":")[1])
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    text = (
+        "💰✨ <b>الخطوة 3 من 5 — الميزانية التقريبية</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        "اختر الميزانية التقريبية التي تناسبك ليقترح عليك المطور أفضل تصميم وحل ممكن:"
+    )
+    rows = [
+        [InlineKeyboardButton(text=b, callback_data=f"st_web_bgt:{sid}:{idx}")]
+        for idx, b in enumerate(WEBSITE_BUDGETS)
+    ]
+    rows.append([InlineKeyboardButton(text="↩️ إلغاء", callback_data=f"st_web_hub:{sid}")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    try:
+        await cb.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb)
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("st_web_bgt:"))
+async def seller_web_pick_budget(cb: CallbackQuery, state: FSMContext):
+    _, sid_str, idx_str = cb.data.split(":", 2)
+    sid = int(sid_str)
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    idx = int(idx_str)
+    budget = WEBSITE_BUDGETS[idx] if 0 <= idx < len(WEBSITE_BUDGETS) else WEBSITE_BUDGETS[-1]
+    await state.update_data(web_sid=sid, web_budget=budget)
+    await state.set_state(WebsiteReqFSM.details)
+    text = (
+        "🎨✨ <b>الخطوة 4 من 5 — فكرة الموقع والألوان والدومين</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        "أرسل رسالة واحدة تشرح فيها أي تفاصيل ترغب بها:\n"
+        "✦ نوع منتجاتك أو نشاط متجرك\n"
+        "✦ الألوان المفضّلة أو رابط موقع أعجبك تصميمه\n"
+        "✦ اسم الدومين المقترح (مثال: <code>myshop.dz</code>)\n\n"
+        "أو اضغط <b>تخطي</b> لمناقشة كل شيء مباشرة مع المطور 👇"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⏭️ تخطي (سأناقش التفاصيل مع المطور)", callback_data=f"st_web_skip_notes:{sid}")],
+        [InlineKeyboardButton(text="✖️ إلغاء", callback_data=f"st_web_hub:{sid}")],
+    ])
+    try:
+        await cb.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb)
+    await cb.answer()
+
+
+async def _ask_web_phone_step(target_msg: Message, uid: int, sid: int, state: FSMContext):
+    saved_phone = ""
+    async with Session() as s:
+        st = await s.get(Store, sid)
+        u = (await s.execute(select(User).where(User.tg_id == uid))).scalar_one_or_none()
+        saved_phone = (st.contact_phone or st.contact_whatsapp if st else "") or (u.saved_phone if u else "")
+    await state.update_data(web_saved_phone=saved_phone)
+    await state.set_state(WebsiteReqFSM.phone)
+    rows = []
+    if saved_phone:
+        rows.append([
+            InlineKeyboardButton(
+                text=f"✅ استخدام رقمي المحفوظ ({saved_phone})",
+                callback_data=f"st_web_use_phone:{sid}",
+            )
+        ])
+    rows.append([InlineKeyboardButton(text="⏭️ تواصل عبر تيليجرام فقط", callback_data=f"st_web_skip_phone:{sid}")])
+    await target_msg.answer(
+        "📞✨ <b>الخطوة 5 من 5 — رقم الهاتف / الواتساب</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        "أرسل رقم هاتفك أو واتساب للتواصل السريع مع المطور، أو اختر من الأزرار أدناه:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+@seller_router.callback_query(F.data.startswith("st_web_skip_notes:"))
+async def seller_web_skip_notes(cb: CallbackQuery, state: FSMContext):
+    sid = int(cb.data.split(":")[1])
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    await state.update_data(web_sid=sid, web_notes="")
+    await _ask_web_phone_step(cb.message, cb.from_user.id, sid, state)
+    await cb.answer()
+
+
+@seller_router.message(WebsiteReqFSM.details)
+async def seller_web_save_notes(message: Message, state: FSMContext):
+    data = await state.get_data()
+    sid = int(data.get("web_sid") or 0)
+    notes = (message.text or message.caption or "").strip()[:1500]
+    await state.update_data(web_notes=notes)
+    await _ask_web_phone_step(message, message.from_user.id, sid, state)
+
+
+async def _finalize_website_request(target_msg: Message, uid: int, state: FSMContext, phone: str):
+    data = await state.get_data()
+    await state.clear()
+    sid = int(data.get("web_sid") or 0)
+    pkg_code = data.get("web_pkg") or "ecommerce"
+    feats = ",".join(data.get("web_feats") or [])
+    budget = data.get("web_budget") or WEBSITE_BUDGETS[-1]
+    notes = data.get("web_notes") or ""
+    async with Session() as s:
+        st = await s.get(Store, sid)
+        st_name = st.name if st else f"Store #{sid}"
+        req = WebsiteRequest(
+            store_id=sid,
+            seller_tg_id=uid,
+            store_name=st_name[:120],
+            package_code=pkg_code,
+            features=feats,
+            budget=budget[:80],
+            notes=notes[:1500],
+            contact_phone=(phone or "تيليجرام فقط")[:60],
+            status="pending",
+        )
+        s.add(req)
+        await s.commit()
+        await s.refresh(req)
+        req_id = req.id
+
+    seller_card = (
+        f"🎉✅ <b>تم إرسال طلب إنشاء موقعك بنجاح! (طلب #{req_id})</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        + _format_web_req_card(req, msg_count=0, for_dev=False)
+        + "\n\n💬 <i>سيتواصل معك المطور قريباً هنا داخل البوت، ويمكنك بدء المحادثة معه الآن مباشرة 👇</i>"
+    )
+    dev_user = await _get_dev_username()
+    seller_rows = [
+        [InlineKeyboardButton(text="💬 التحدث مع المطور الآن", callback_data=f"st_web_chat:{req_id}")],
+    ]
+    if dev_user:
+        seller_rows.append([
+            InlineKeyboardButton(text="✈️ محادثة المطور على تيليجرام", url=f"https://t.me/{dev_user}")
+        ])
+    seller_rows.append([InlineKeyboardButton(text="📋 عرض طلبي", callback_data=f"st_web_view:{req_id}")])
+    seller_rows.append([InlineKeyboardButton(text="↩️ العودة لمتجري", callback_data=f"mngstore:{sid}")])
+    await target_msg.answer(seller_card, reply_markup=InlineKeyboardMarkup(inline_keyboard=seller_rows))
+
+    # Instant rich notification to Developer (ADMIN_IDS)
+    dev_card = (
+        f"🔔🌐 <b>طلب إنشاء موقع إلكتروني جديد #{req_id}!</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        + _format_web_req_card(req, msg_count=0, for_dev=True)
+    )
+    dev_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💬 التحدث / الرد على البائع", callback_data=f"admin:web_reply:{req_id}")],
+        [InlineKeyboardButton(text="💰 إرسال عرض سعر ومدة", callback_data=f"admin:web_quote:{req_id}"),
+         InlineKeyboardButton(text="🛠️ بدء التنفيذ", callback_data=f"admin:web_st:{req_id}:in_progress")],
+        [InlineKeyboardButton(text="📋 فتح لوحة الطلب كاملة", callback_data=f"admin:web_view:{req_id}")],
+    ])
+    for aid in ADMIN_IDS:
+        with suppress(Exception):
+            await target_msg.bot.send_message(aid, dev_card, reply_markup=dev_kb)
+
+
+@seller_router.callback_query(F.data.startswith("st_web_use_phone:"))
+async def seller_web_use_saved_phone(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    phone = data.get("web_saved_phone") or "تيليجرام فقط"
+    await _finalize_website_request(cb.message, cb.from_user.id, state, phone)
+    await cb.answer("✅ تم إرسال الطلب!")
+
+
+@seller_router.callback_query(F.data.startswith("st_web_skip_phone:"))
+async def seller_web_skip_phone(cb: CallbackQuery, state: FSMContext):
+    await _finalize_website_request(cb.message, cb.from_user.id, state, "تيليجرام فقط")
+    await cb.answer("✅ تم إرسال الطلب!")
+
+
+@seller_router.message(WebsiteReqFSM.phone)
+async def seller_web_save_phone(message: Message, state: FSMContext):
+    phone = (message.text or "").strip()[:60]
+    await _finalize_website_request(message, message.from_user.id, state, phone)
+
+
+@seller_router.callback_query(F.data.startswith("st_web_list:"))
+async def seller_web_list(cb: CallbackQuery):
+    sid = int(cb.data.split(":")[1])
+    if not await is_store_owner(cb.from_user.id, sid):
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    async with Session() as s:
+        reqs = (
+            await s.execute(
+                select(WebsiteRequest)
+                .where(WebsiteRequest.store_id == sid, WebsiteRequest.seller_tg_id == cb.from_user.id)
+                .order_by(WebsiteRequest.id.desc())
+                .limit(20)
+            )
+        ).scalars().all()
+    if not reqs:
+        return await cb.answer("📭 لا توجد طلبات إنشاء موقع بعد.", show_alert=True)
+    rows = []
+    for r in reqs:
+        pkg = WEBSITE_PACKAGES.get(r.package_code) or WEBSITE_PACKAGES["ecommerce"]
+        st_lbl = WEBSITE_STATUS_LABELS.get(r.status, r.status)
+        rows.append([
+            InlineKeyboardButton(
+                text=f"#{r.id} {pkg['emoji']} {st_lbl} — {r.created_at.strftime('%m-%d')}",
+                callback_data=f"st_web_view:{r.id}",
+            )
+        ])
+    rows.append([InlineKeyboardButton(text="🚀 طلب موقع جديد", callback_data=f"st_web_new:{sid}")])
+    rows.append([InlineKeyboardButton(text="↩️ رجوع", callback_data=f"st_web_hub:{sid}")])
+    text = "📋✨ <b>طلبات إنشاء المواقع الخاصة بمتجرك</b>\n━━━━━━━━━━━━━━━\nاختر طلباً لعرض تفاصيله ومحادثة المطور:"
+    try:
+        await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    except Exception:
+        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await cb.answer()
+
+
+async def _render_seller_web_view(msg_obj: Message, uid: int, req_id: int, edit: bool = True):
+    async with Session() as s:
+        req = await s.get(WebsiteRequest, req_id)
+        if not req or (req.seller_tg_id != uid and uid not in ADMIN_IDS):
+            return
+        msg_cnt = (
+            await s.execute(select(func.count(WebsiteMessage.id)).where(WebsiteMessage.request_id == req_id))
+        ).scalar() or 0
+    text = _format_web_req_card(req, msg_count=msg_cnt, for_dev=False)
+    dev_user = await _get_dev_username()
+    rows = []
+    if req.live_url and req.live_url.startswith(("http://", "https://")):
+        rows.append([InlineKeyboardButton(text="🌍 فتح موقعك الجاهز الآن", url=req.live_url)])
+    if req.status != "cancelled":
+        rows.append([InlineKeyboardButton(text="💬 التحدث مع المطور الآن", callback_data=f"st_web_chat:{req.id}")])
+    if msg_cnt > 0:
+        rows.append([InlineKeyboardButton(text=f"📜 سجل المحادثة ({msg_cnt})", callback_data=f"st_web_hist:{req.id}")])
+    if dev_user:
+        rows.append([InlineKeyboardButton(text="✈️ مراسلة المطور على تيليجرام", url=f"https://t.me/{dev_user}")])
+    if req.status == "pending":
+        rows.append([InlineKeyboardButton(text="❌ إلغاء الطلب", callback_data=f"st_web_cancel:{req.id}")])
+    rows.append([InlineKeyboardButton(text="↩️ رجوع لطلباتي", callback_data=f"st_web_list:{req.store_id}")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    if edit:
+        try:
+            await msg_obj.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+            return
+        except Exception:
+            pass
+    await msg_obj.answer(text, reply_markup=kb, disable_web_page_preview=True)
+
+
+@seller_router.callback_query(F.data.startswith("st_web_view:"))
+async def seller_web_view(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    req_id = int(cb.data.split(":")[1])
+    await _render_seller_web_view(cb.message, cb.from_user.id, req_id, edit=True)
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("st_web_cancel:"))
+async def seller_web_cancel(cb: CallbackQuery):
+    req_id = int(cb.data.split(":")[1])
+    async with Session() as s:
+        req = await s.get(WebsiteRequest, req_id)
+        if not req or req.seller_tg_id != cb.from_user.id:
+            return await cb.answer("⛔ غير مصرح.", show_alert=True)
+        if req.status != "pending":
+            return await cb.answer("⚠️ لا يمكن إلغاء الطلب بعد بدء العمل عليه، تواصل مع المطور.", show_alert=True)
+        req.status = "cancelled"
+        req.updated_at = utcnow()
+        await s.commit()
+    await cb.answer("✅ تم إلغاء الطلب.", show_alert=True)
+    await _render_seller_web_view(cb.message, cb.from_user.id, req_id, edit=True)
+
+
+@seller_router.callback_query(F.data.startswith("st_web_chat:"))
+async def seller_web_chat_start(cb: CallbackQuery, state: FSMContext):
+    req_id = int(cb.data.split(":")[1])
+    async with Session() as s:
+        req = await s.get(WebsiteRequest, req_id)
+    if not req or req.seller_tg_id != cb.from_user.id:
+        return await cb.answer("⛔ غير مصرح.", show_alert=True)
+    await state.update_data(web_chat_req_id=req_id)
+    await state.set_state(WebsiteChatFSM.message)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="↩️ إنهاء / رجوع للطلب", callback_data=f"st_web_view:{req_id}")],
+    ])
+    await cb.message.answer(
+        f"💬✨ <b>محادثة مباشرة مع المطور — طلب موقع #{req_id}</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"أرسل رسالتك الآن (نص أو صورة لشعارك / مثال تصميم) وستصل فوراً للمطور 👇",
+        reply_markup=kb,
+    )
+    await cb.answer()
+
+
+@seller_router.message(WebsiteChatFSM.message)
+async def seller_web_chat_send(message: Message, state: FSMContext):
+    data = await state.get_data()
+    req_id = int(data.get("web_chat_req_id") or 0)
+    await state.clear()
+    txt = (message.text or message.caption or "").strip()[:2000]
+    photo_id = message.photo[-1].file_id if message.photo else ""
+    if not txt and not photo_id:
+        return await message.answer("❌ يرجى إرسال رسالة نصية أو صورة.")
+    async with Session() as s:
+        req = await s.get(WebsiteRequest, req_id)
+        if not req or req.seller_tg_id != message.from_user.id:
+            return await message.answer("⛔ الطلب غير موجود.")
+        s.add(WebsiteMessage(
+            request_id=req_id,
+            sender_role="seller",
+            sender_tg_id=message.from_user.id,
+            text=txt,
+            photo_file_id=photo_id,
+        ))
+        req.updated_at = utcnow()
+        await s.commit()
+        st_name = req.store_name
+
+    # Forward instantly to Developer (ADMIN_IDS)
+    dev_header = (
+        f"💬🌐 <b>رسالة جديدة من البائع — طلب موقع #{req_id}</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"✦ 🏪 <b>المتجر:</b> {esc(st_name)}\n"
+        f"✦ 👤 <b>البائع:</b> <code>{message.from_user.id}</code>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"{esc(txt) if txt else '📸 [صورة مرفقة]'}"
+    )
+    dev_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="↩️ ردّ على البائع الآن", callback_data=f"admin:web_reply:{req_id}")],
+        [InlineKeyboardButton(text="📋 فتح الطلب", callback_data=f"admin:web_view:{req_id}")],
+    ])
+    for aid in ADMIN_IDS:
+        with suppress(Exception):
+            if photo_id:
+                await message.bot.send_photo(aid, photo_id, caption=dev_header[:1000], reply_markup=dev_kb)
+            else:
+                await message.bot.send_message(aid, dev_header, reply_markup=dev_kb)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💬 إرسال رسالة أخرى للمطور", callback_data=f"st_web_chat:{req_id}")],
+        [InlineKeyboardButton(text="📋 عرض الطلب", callback_data=f"st_web_view:{req_id}")],
+    ])
+    await message.answer("✅✨ تم إرسال رسالتك إلى المطور بنجاح! سيصلك الرد هنا فورياً.", reply_markup=kb)
+
+
+@seller_router.callback_query(F.data.startswith("st_web_hist:"))
+async def seller_web_chat_history(cb: CallbackQuery):
+    req_id = int(cb.data.split(":")[1])
+    async with Session() as s:
+        req = await s.get(WebsiteRequest, req_id)
+        if not req or (req.seller_tg_id != cb.from_user.id and cb.from_user.id not in ADMIN_IDS):
+            return await cb.answer("⛔ غير مصرح.", show_alert=True)
+        msgs = (
+            await s.execute(
+                select(WebsiteMessage)
+                .where(WebsiteMessage.request_id == req_id)
+                .order_by(WebsiteMessage.id.asc())
+                .limit(30)
+            )
+        ).scalars().all()
+    if not msgs:
+        return await cb.answer("📭 لا توجد رسائل بعد.", show_alert=True)
+    lines = [f"📜✨ <b>سجل المحادثة — طلب موقع #{req_id}</b>", "━━━━━━━━━━━━━━━"]
+    for m in msgs:
+        who = "👨‍💻 <b>المطور</b>" if m.sender_role == "developer" else "🏪 <b>البائع</b>"
+        body = esc(m.text) if m.text else ""
+        if m.photo_file_id:
+            body = ("📸 [صورة] " + body).strip()
+        lines.append(f"{who} <i>({m.created_at.strftime('%m-%d %H:%M')})</i>:\n{body}\n")
+    back_cb = f"st_web_view:{req_id}"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💬 إرسال رسالة", callback_data=f"st_web_chat:{req_id}")],
+        [InlineKeyboardButton(text="↩️ رجوع للطلب", callback_data=back_cb)],
+    ])
+    full_txt = "\n".join(lines)[:3900]
+    try:
+        await cb.message.edit_text(full_txt, reply_markup=kb)
+    except Exception:
+        await cb.message.answer(full_txt, reply_markup=kb)
+    await cb.answer()
+
+
+# ─── Developer (Admin) Website Requests Management ───
+
+async def _render_admin_webreqs(msg_obj: Message, lang: str, edit: bool = True):
+    async with Session() as s:
+        reqs = (
+            await s.execute(select(WebsiteRequest).order_by(WebsiteRequest.id.desc()).limit(25))
+        ).scalars().all()
+    dev_user = await _get_dev_username()
+    dev_lbl = f"@{dev_user}" if dev_user else "غير محدد"
+    rows = []
+    for r in reqs:
+        pkg = WEBSITE_PACKAGES.get(r.package_code) or WEBSITE_PACKAGES["ecommerce"]
+        st_lbl = WEBSITE_STATUS_LABELS.get(r.status, r.status)
+        rows.append([
+            InlineKeyboardButton(
+                text=f"#{r.id} {pkg['emoji']} {r.store_name[:18]} | {st_lbl}",
+                callback_data=f"admin:web_view:{r.id}",
+            )
+        ])
+    rows.append([
+        InlineKeyboardButton(text=f"⚙️ معرّف المطور ({dev_lbl})", callback_data="admin:web_devuser")
+    ])
+    rows.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:admin")])
+    text = (
+        f"🌐✨ <b>إدارة طلبات إنشاء المواقع الإلكترونية (لوحة المطور)</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"✦ 📊 إجمالي الطلبات: <b>{len(reqs)}</b>\n"
+        f"✦ ✈️ معرّف التواصل المباشر: <code>{esc(dev_lbl)}</code>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        + ("اضغط على أي طلب لمراسلة البائع أو تحديد السعر أو تسليم الموقع:" if reqs else "📭 لا توجد طلبات إنشاء مواقع حالياً.")
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    if edit:
+        try:
+            await msg_obj.edit_text(text, reply_markup=kb)
+            return
+        except Exception:
+            pass
+    await msg_obj.answer(text, reply_markup=kb)
+
+
+@seller_router.callback_query(F.data == "admin:webreqs")
+async def admin_webreqs_list(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    await state.clear()
+    await _render_admin_webreqs(cb.message, await get_lang(cb.from_user.id), edit=True)
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data == "admin:web_devuser")
+async def admin_web_devuser_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    await state.set_state(AdminWebDevFSM.dev_username)
+    await cb.message.answer(
+        "✈️ أرسل معرّف تيليجرام الخاص بك كمطور (بدون @ أو معه، مثال: <code>MyDevHandle</code>) ليظهر زر مراسلتك المباشرة للبائعين، أو أرسل <code>off</code> لإخفائه:"
+    )
+    await cb.answer()
+
+
+@seller_router.message(AdminWebDevFSM.dev_username)
+async def admin_web_devuser_save(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    await state.clear()
+    val = (message.text or "").strip().lstrip("@")
+    if val.lower() in ("off", "none", "0", "-"):
+        val = ""
+    await set_setting("developer_username", val[:64])
+    await message.answer(
+        f"✅ تم حفظ معرّف المطور: <code>@{esc(val)}</code>" if val else "✅ تم إخفاء زر المعرّف المباشر (المحادثة تبقى داخل البوت)."
+    )
+    await _render_admin_webreqs(message, await get_lang(message.from_user.id), edit=False)
+
+
+async def _render_admin_web_view(msg_obj: Message, req_id: int, edit: bool = True):
+    async with Session() as s:
+        req = await s.get(WebsiteRequest, req_id)
+        if not req:
+            return
+        msg_cnt = (
+            await s.execute(select(func.count(WebsiteMessage.id)).where(WebsiteMessage.request_id == req_id))
+        ).scalar() or 0
+    text = _format_web_req_card(req, msg_count=msg_cnt, for_dev=True)
+    rows = [
+        [InlineKeyboardButton(text="💬 الرد / محادثة البائع", callback_data=f"admin:web_reply:{req_id}")],
+        [InlineKeyboardButton(text="💰 تحديد عرض السعر والمدة", callback_data=f"admin:web_quote:{req_id}"),
+         InlineKeyboardButton(text="🌍 تسليم رابط الموقع", callback_data=f"admin:web_deliver:{req_id}")],
+        [InlineKeyboardButton(text="💬 قيد النقاش", callback_data=f"admin:web_st:{req_id}:negotiating"),
+         InlineKeyboardButton(text="🛠️ جاري التنفيذ", callback_data=f"admin:web_st:{req_id}:in_progress")],
+        [InlineKeyboardButton(text="✅ مكتمل", callback_data=f"admin:web_st:{req_id}:completed"),
+         InlineKeyboardButton(text="❌ ملغي", callback_data=f"admin:web_st:{req_id}:cancelled")],
+    ]
+    if msg_cnt > 0:
+        rows.append([InlineKeyboardButton(text=f"📜 سجل المحادثة ({msg_cnt})", callback_data=f"admin:web_hist:{req_id}")])
+    rows.append([InlineKeyboardButton(text="↩️ قائمة طلبات المواقع", callback_data="admin:webreqs")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    if edit:
+        try:
+            await msg_obj.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+            return
+        except Exception:
+            pass
+    await msg_obj.answer(text, reply_markup=kb, disable_web_page_preview=True)
+
+
+@seller_router.callback_query(F.data.startswith("admin:web_view:"))
+async def admin_web_view(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    await state.clear()
+    req_id = int(cb.data.split(":")[2])
+    await _render_admin_web_view(cb.message, req_id, edit=True)
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("admin:web_hist:"))
+async def admin_web_hist(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    req_id = int(cb.data.split(":")[2])
+    async with Session() as s:
+        msgs = (
+            await s.execute(
+                select(WebsiteMessage)
+                .where(WebsiteMessage.request_id == req_id)
+                .order_by(WebsiteMessage.id.asc())
+                .limit(30)
+            )
+        ).scalars().all()
+    if not msgs:
+        return await cb.answer("📭 لا توجد رسائل بعد.", show_alert=True)
+    lines = [f"📜✨ <b>سجل محادثة طلب الموقع #{req_id}</b>", "━━━━━━━━━━━━━━━"]
+    for m in msgs:
+        who = "👨‍💻 <b>أنت (المطور)</b>" if m.sender_role == "developer" else "🏪 <b>البائع</b>"
+        body = esc(m.text) if m.text else ""
+        if m.photo_file_id:
+            body = ("📸 [صورة] " + body).strip()
+        lines.append(f"{who} <i>({m.created_at.strftime('%m-%d %H:%M')})</i>:\n{body}\n")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💬 ردّ على البائع", callback_data=f"admin:web_reply:{req_id}")],
+        [InlineKeyboardButton(text="↩️ رجوع للطلب", callback_data=f"admin:web_view:{req_id}")],
+    ])
+    try:
+        await cb.message.edit_text("\n".join(lines)[:3900], reply_markup=kb)
+    except Exception:
+        await cb.message.answer("\n".join(lines)[:3900], reply_markup=kb)
+    await cb.answer()
+
+
+@seller_router.callback_query(F.data.startswith("admin:web_reply:"))
+async def admin_web_reply_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    req_id = int(cb.data.split(":")[2])
+    await state.update_data(dev_reply_req_id=req_id)
+    await state.set_state(AdminWebDevFSM.reply)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="↩️ إلغاء", callback_data=f"admin:web_view:{req_id}")],
+    ])
+    await cb.message.answer(
+        f"👨‍💻💬 <b>الرد على البائع — طلب موقع #{req_id}</b>\n"
+        f"أرسل ردك الآن (نص أو صورة نموذج/تصميم) وسيصل للبائع فوراً:",
+        reply_markup=kb,
+    )
+    await cb.answer()
+
+
+@seller_router.message(AdminWebDevFSM.reply)
+async def admin_web_reply_send(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    data = await state.get_data()
+    req_id = int(data.get("dev_reply_req_id") or 0)
+    await state.clear()
+    txt = (message.text or message.caption or "").strip()[:2000]
+    photo_id = message.photo[-1].file_id if message.photo else ""
+    if not txt and not photo_id:
+        return await message.answer("❌ يرجى إرسال نص أو صورة.")
+    async with Session() as s:
+        req = await s.get(WebsiteRequest, req_id)
+        if not req:
+            return await message.answer("❌ الطلب غير موجود.")
+        s.add(WebsiteMessage(
+            request_id=req_id,
+            sender_role="developer",
+            sender_tg_id=message.from_user.id,
+            text=txt,
+            photo_file_id=photo_id,
+        ))
+        if req.status == "pending":
+            req.status = "negotiating"
+        req.updated_at = utcnow()
+        seller_id = req.seller_tg_id
+        await s.commit()
+
+    seller_msg = (
+        f"👨‍💻✨ <b>ردّ المطور على طلب موقعك #{req_id}</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"{esc(txt) if txt else '📸 [صورة مرفقة من المطور]'}"
+    )
+    seller_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="↩️ ردّ على المطور", callback_data=f"st_web_chat:{req_id}")],
+        [InlineKeyboardButton(text="📋 عرض طلبي", callback_data=f"st_web_view:{req_id}")],
+    ])
+    with suppress(Exception):
+        if photo_id:
+            await message.bot.send_photo(seller_id, photo_id, caption=seller_msg[:1000], reply_markup=seller_kb)
+        else:
+            await message.bot.send_message(seller_id, seller_msg, reply_markup=seller_kb)
+
+    await message.answer(
+        f"✅ تم إرسال ردّك إلى البائع (طلب #{req_id}).",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💬 إرسال رسالة أخرى", callback_data=f"admin:web_reply:{req_id}")],
+            [InlineKeyboardButton(text="📋 فتح الطلب", callback_data=f"admin:web_view:{req_id}")],
+        ]),
+    )
+
+
+@seller_router.callback_query(F.data.startswith("admin:web_quote:"))
+async def admin_web_quote_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    req_id = int(cb.data.split(":")[2])
+    await state.update_data(dev_quote_req_id=req_id)
+    await state.set_state(AdminWebDevFSM.quote)
+    await cb.message.answer(
+        f"💰✨ <b>إرسال عرض سعر — طلب موقع #{req_id}</b>\n"
+        f"أرسل <b>السعر ({DEFAULT_CURRENCY})</b> و<b>مدة التسليم بالأيام</b> مفصولين بمسافة.\n"
+        f"مثال: <code>25000 7</code>"
+    )
+    await cb.answer()
+
+
+@seller_router.message(AdminWebDevFSM.quote)
+async def admin_web_quote_save(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    data = await state.get_data()
+    req_id = int(data.get("dev_quote_req_id") or 0)
+    parts = (message.text or "").strip().split()
+    try:
+        price = float(parts[0])
+        days = int(parts[1]) if len(parts) >= 2 else 7
+        if price <= 0 or days <= 0:
+            raise ValueError
+    except (ValueError, IndexError):
+        return await message.answer("❌ صيغة غير صحيحة. مثال صحيح: <code>25000 7</code>")
+    await state.clear()
+    async with Session() as s:
+        req = await s.get(WebsiteRequest, req_id)
+        if not req:
+            return await message.answer("❌ الطلب غير موجود.")
+        req.quoted_price = price
+        req.delivery_days = days
+        if req.status == "pending":
+            req.status = "negotiating"
+        req.updated_at = utcnow()
+        seller_id = req.seller_tg_id
+        await s.commit()
+
+    quote_msg = (
+        f"💎✨ <b>عرض سعر رسمي من المطور — طلب موقع #{req_id}</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"✦ 💰 <b>التكلفة المقترحة:</b> <b>{price:g} {DEFAULT_CURRENCY}</b>\n"
+        f"✦ ⏱️ <b>مدة التنفيذ والتسليم:</b> <b>{days} أيام</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"💬 يمكنك الرد على المطور الآن للتأكيد أو مناقشة أي تعديل 👇"
+    )
+    seller_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💬 الرد على المطور", callback_data=f"st_web_chat:{req_id}")],
+        [InlineKeyboardButton(text="📋 تفاصيل الطلب", callback_data=f"st_web_view:{req_id}")],
+    ])
+    with suppress(Exception):
+        await message.bot.send_message(seller_id, quote_msg, reply_markup=seller_kb)
+    await message.answer(f"✅ تم إرسال عرض السعر ({price:g} {DEFAULT_CURRENCY} / {days} أيام) للبائع!")
+    await _render_admin_web_view(message, req_id, edit=False)
+
+
+@seller_router.callback_query(F.data.startswith("admin:web_deliver:"))
+async def admin_web_deliver_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    req_id = int(cb.data.split(":")[2])
+    await state.update_data(dev_deliver_req_id=req_id)
+    await state.set_state(AdminWebDevFSM.deliver_url)
+    await cb.message.answer(
+        f"🌍✨ <b>تسليم الموقع الجاهز — طلب #{req_id}</b>\n"
+        f"أرسل رابط الموقع النهائي (مثال: <code>https://mystore.dz</code>) وسيُغلق الطلب كمكتمل ويصل الرابط للبائع فوراً:"
+    )
+    await cb.answer()
+
+
+@seller_router.message(AdminWebDevFSM.deliver_url)
+async def admin_web_deliver_save(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    data = await state.get_data()
+    req_id = int(data.get("dev_deliver_req_id") or 0)
+    url = (message.text or "").strip()[:300]
+    if not url.startswith(("http://", "https://")):
+        return await message.answer("❌ يرجى إرسال رابط صحيح يبدأ بـ <code>https://</code> أو <code>http://</code>")
+    await state.clear()
+    async with Session() as s:
+        req = await s.get(WebsiteRequest, req_id)
+        if not req:
+            return await message.answer("❌ الطلب غير موجود.")
+        req.live_url = url
+        req.status = "completed"
+        req.updated_at = utcnow()
+        seller_id = req.seller_tg_id
+        st_name = req.store_name
+        await s.commit()
+
+    delivery_msg = (
+        f"🎉🌍 <b>مبارك لك! موقعك الإلكتروني جاهز ومُسلّم الآن</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"✦ 🏪 <b>المتجر:</b> {esc(st_name)}\n"
+        f"✦ 🧾 <b>رقم الطلب:</b> #{req_id}\n"
+        f"✦ 🔗 <b>الرابط:</b> {esc(url)}\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"نتمنى لك مبيعات موفّقة! يمكنك دائماً مراسلة المطور لأي دعم أو تحديث ✨"
+    )
+    seller_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌍 فتح موقعك الآن", url=url)],
+        [InlineKeyboardButton(text="💬 مراسلة المطور", callback_data=f"st_web_chat:{req_id}")],
+    ])
+    with suppress(Exception):
+        await message.bot.send_message(seller_id, delivery_msg, reply_markup=seller_kb, disable_web_page_preview=True)
+    await message.answer(f"🎉 تم تسليم الموقع وإشعار البائع بنجاح!")
+    await _render_admin_web_view(message, req_id, edit=False)
+
+
+@seller_router.callback_query(F.data.startswith("admin:web_st:"))
+async def admin_web_change_status(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        return await cb.answer("غير مصرح", show_alert=True)
+    _, _, req_id_str, new_st = cb.data.split(":", 3)
+    req_id = int(req_id_str)
+    if new_st not in WEBSITE_STATUS_LABELS:
+        return await cb.answer("❌ حالة غير صالحة.", show_alert=True)
+    async with Session() as s:
+        req = await s.get(WebsiteRequest, req_id)
+        if not req:
+            return await cb.answer("Not found", show_alert=True)
+        req.status = new_st
+        req.updated_at = utcnow()
+        seller_id = req.seller_tg_id
+        await s.commit()
+    st_lbl = WEBSITE_STATUS_LABELS[new_st]
+    with suppress(Exception):
+        await cb.bot.send_message(
+            seller_id,
+            f"🔔🌐 <b>تحديث حالة طلب موقعك #{req_id}</b>\n━━━━━━━━━━━━━━━\n📌 الحالة الجديدة: <b>{st_lbl}</b>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💬 محادثة المطور", callback_data=f"st_web_chat:{req_id}")],
+                [InlineKeyboardButton(text="📋 عرض الطلب", callback_data=f"st_web_view:{req_id}")],
+            ]),
+        )
+    await cb.answer(f"✅ تم تحديث الحالة إلى: {st_lbl}", show_alert=True)
+    await _render_admin_web_view(cb.message, req_id, edit=True)
 
 
 # ════════════════════════════════════════════════════════════════════
