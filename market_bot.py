@@ -28,6 +28,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
@@ -504,6 +505,371 @@ WEBSITE_STATUS_LABELS: Final[dict[str, str]] = {
     "completed": "✅ مكتمل ومسلّم",
     "cancelled": "❌ ملغي",
 }
+
+
+# ─── Legendary Achievements, Missions & Badges System (Sellers & Buyers) ───
+
+BADGE_CATALOG: Final[dict[str, dict[str, Any]]] = {
+    # 🏪 Seller Badges (16 Missions)
+    "seller_starter": {
+        "code": "seller_starter",
+        "role": "seller",
+        "emoji": "🌱",
+        "title": "البائع الطموح",
+        "desc": "افتح متجرك وانشر أول منتج معتمد في المنصة",
+        "target": 1,
+        "xp": 50,
+        "reward_dzd": 0.0,
+    },
+    "seller_brand": {
+        "code": "seller_brand",
+        "role": "seller",
+        "emoji": "🎨",
+        "title": "صاحب الهوية",
+        "desc": "أضف شعاراً (Logo) + وصفاً + شركة توصيل معتمدة لمتجرك",
+        "target": 3,
+        "xp": 150,
+        "reward_dzd": 0.0,
+    },
+    "seller_first_sale": {
+        "code": "seller_first_sale",
+        "role": "seller",
+        "emoji": "🎉",
+        "title": "أول صفقة ناجحة",
+        "desc": "أتمم أول طلب مكتمل بنجاح في متجرك",
+        "target": 1,
+        "xp": 100,
+        "reward_dzd": 0.0,
+    },
+    "seller_promo_master": {
+        "code": "seller_promo_master",
+        "role": "seller",
+        "emoji": "🎟️",
+        "title": "صانع العروض",
+        "desc": "أنشئ أول كود خصم ترويجي لجذب الزبائن لمتجرك",
+        "target": 1,
+        "xp": 90,
+        "reward_dzd": 0.0,
+    },
+    "seller_flash_king": {
+        "code": "seller_flash_king",
+        "role": "seller",
+        "emoji": "⚡",
+        "title": "برق التخفيضات",
+        "desc": "أطلق عرضاً سريعاً (Flash Sale) على منتج أو أكثر",
+        "target": 1,
+        "xp": 100,
+        "reward_dzd": 0.0,
+    },
+    "seller_58_wilayas": {
+        "code": "seller_58_wilayas",
+        "role": "seller",
+        "emoji": "🗺️",
+        "title": "تغطية وطنية شاملة",
+        "desc": "اضبط أسعار التوصيل لـ 30 ولاية جزائرية أو أكثر",
+        "target": 30,
+        "xp": 120,
+        "reward_dzd": 0.0,
+    },
+    "seller_catalog": {
+        "code": "seller_catalog",
+        "role": "seller",
+        "emoji": "📦",
+        "title": "صانع التشكيلة",
+        "desc": "اعرض 10 منتجات معتمدة أو أكثر في متجرك",
+        "target": 10,
+        "xp": 120,
+        "reward_dzd": 0.0,
+    },
+    "seller_mega_catalog": {
+        "code": "seller_mega_catalog",
+        "role": "seller",
+        "emoji": "🏬",
+        "title": "المعرض الكبير",
+        "desc": "انشر 30 منتجاً معتمداً أو أكثر (+هدية 50 دج!)",
+        "target": 30,
+        "xp": 220,
+        "reward_dzd": 50.0,
+    },
+    "seller_views_star": {
+        "code": "seller_views_star",
+        "role": "seller",
+        "emoji": "👁️",
+        "title": "جاذب الأنظار",
+        "desc": "احصل على 500 مشاهدة أو أكثر لمنتجات متجرك",
+        "target": 500,
+        "xp": 160,
+        "reward_dzd": 0.0,
+    },
+    "seller_pro": {
+        "code": "seller_pro",
+        "role": "seller",
+        "emoji": "🏅",
+        "title": "البائع البارع",
+        "desc": "أتمم 10 طلبات مكتملة بنجاح (+هدية 100 دج!)",
+        "target": 10,
+        "xp": 250,
+        "reward_dzd": 100.0,
+    },
+    "seller_loved": {
+        "code": "seller_loved",
+        "role": "seller",
+        "emoji": "⭐",
+        "title": "محبوب الزبائن",
+        "desc": "احصل على 5 تقييمات بمتوسط 4.5⭐ أو أعلى",
+        "target": 5,
+        "xp": 200,
+        "reward_dzd": 0.0,
+    },
+    "seller_five_star": {
+        "code": "seller_five_star",
+        "role": "seller",
+        "emoji": "🌟",
+        "title": "نجم الخمس نجوم",
+        "desc": "احصل على 10 تقييمات بـ 5 نجوم كاملة (+هدية 80 دج!)",
+        "target": 10,
+        "xp": 260,
+        "reward_dzd": 80.0,
+    },
+    "seller_influencer": {
+        "code": "seller_influencer",
+        "role": "seller",
+        "emoji": "🔥",
+        "title": "النجم الصاعد",
+        "desc": "اجمع 25 متابعاً أو أكثر لمتجرك",
+        "target": 25,
+        "xp": 220,
+        "reward_dzd": 0.0,
+    },
+    "seller_verified_pro": {
+        "code": "seller_verified_pro",
+        "role": "seller",
+        "emoji": "💎",
+        "title": "التاجر المعتمد",
+        "desc": "متجر موثّق ✅ أو مشترك PRO/VIP أو يمتلك طلب موقع إلكتروني",
+        "target": 1,
+        "xp": 200,
+        "reward_dzd": 0.0,
+    },
+    "seller_master": {
+        "code": "seller_master",
+        "role": "seller",
+        "emoji": "💼",
+        "title": "التاجر المخضرم",
+        "desc": "أتمم 25 طلباً مكتملاً بنجاح (+هدية 150 دج!)",
+        "target": 25,
+        "xp": 350,
+        "reward_dzd": 150.0,
+    },
+    "seller_legend": {
+        "code": "seller_legend",
+        "role": "seller",
+        "emoji": "👑",
+        "title": "أسطورة التجارة",
+        "desc": "أتمم 50 طلباً مكتملاً بنجاح (+هدية 300 دج رصيد ترويج!)",
+        "target": 50,
+        "xp": 600,
+        "reward_dzd": 300.0,
+    },
+    # 🛍️ Buyer Badges (16 Missions)
+    "buyer_complete": {
+        "code": "buyer_complete",
+        "role": "buyer",
+        "emoji": "🪪",
+        "title": "الملف الذهبي",
+        "desc": "أكمل بيانات ملفك الشخصي (الاسم + الهاتف + العنوان)",
+        "target": 3,
+        "xp": 60,
+        "reward_dzd": 0.0,
+    },
+    "buyer_first": {
+        "code": "buyer_first",
+        "role": "buyer",
+        "emoji": "🛍️",
+        "title": "المشتري المبادر",
+        "desc": "أتمم أول طلب ناجح لك داخل المنصة",
+        "target": 1,
+        "xp": 80,
+        "reward_dzd": 0.0,
+    },
+    "buyer_explorer": {
+        "code": "buyer_explorer",
+        "role": "buyer",
+        "emoji": "❤️",
+        "title": "مستكشف العروض",
+        "desc": "احفظ 5 منتجات أو أكثر في قائمة المفضلة",
+        "target": 5,
+        "xp": 75,
+        "reward_dzd": 0.0,
+    },
+    "buyer_collector": {
+        "code": "buyer_collector",
+        "role": "buyer",
+        "emoji": "💖",
+        "title": "عاشق التسوق",
+        "desc": "احفظ 20 منتجاً أو أكثر في قائمة المفضلة",
+        "target": 20,
+        "xp": 140,
+        "reward_dzd": 0.0,
+    },
+    "buyer_fan": {
+        "code": "buyer_fan",
+        "role": "buyer",
+        "emoji": "🔔",
+        "title": "داعم المتاجر",
+        "desc": "تابع 3 متاجر أو أكثر لتصلك أحدث عروضها",
+        "target": 3,
+        "xp": 75,
+        "reward_dzd": 0.0,
+    },
+    "buyer_superfan": {
+        "code": "buyer_superfan",
+        "role": "buyer",
+        "emoji": "📣",
+        "title": "سفير المتاجر",
+        "desc": "تابع 10 متاجر أو أكثر داخل المنصة",
+        "target": 10,
+        "xp": 160,
+        "reward_dzd": 0.0,
+    },
+    "buyer_multi_store": {
+        "code": "buyer_multi_store",
+        "role": "buyer",
+        "emoji": "🧭",
+        "title": "الرحّالة الذكي",
+        "desc": "اشترِ بنجاح من 3 متاجر مختلفة أو أكثر",
+        "target": 3,
+        "xp": 150,
+        "reward_dzd": 0.0,
+    },
+    "buyer_critic": {
+        "code": "buyer_critic",
+        "role": "buyer",
+        "emoji": "✍️",
+        "title": "الناقد الخبير",
+        "desc": "قيّم 3 متاجر أو أكثر لمساعدة باقي المشترين",
+        "target": 3,
+        "xp": 120,
+        "reward_dzd": 0.0,
+    },
+    "buyer_super_critic": {
+        "code": "buyer_super_critic",
+        "role": "buyer",
+        "emoji": "📝",
+        "title": "خبير التقييمات",
+        "desc": "قيّم 10 متاجر أو أكثر (+هدية 50 دج!)",
+        "target": 10,
+        "xp": 220,
+        "reward_dzd": 50.0,
+    },
+    "buyer_trusted": {
+        "code": "buyer_trusted",
+        "role": "buyer",
+        "emoji": "🛡️",
+        "title": "المشتري الموثوق",
+        "desc": "أتمم 3 طلبات مكتملة بنسبة 0% إلغاء",
+        "target": 3,
+        "xp": 200,
+        "reward_dzd": 0.0,
+    },
+    "buyer_loyal": {
+        "code": "buyer_loyal",
+        "role": "buyer",
+        "emoji": "💎",
+        "title": "الزبون الوفي",
+        "desc": "أتمم 5 طلبات مكتملة بنجاح (+هدية 50 دج!)",
+        "target": 5,
+        "xp": 180,
+        "reward_dzd": 50.0,
+    },
+    "buyer_patron": {
+        "code": "buyer_patron",
+        "role": "buyer",
+        "emoji": "⚡",
+        "title": "المشتري الذهبي",
+        "desc": "أتمم 10 طلبات مكتملة بنجاح (+هدية 100 دج!)",
+        "target": 10,
+        "xp": 300,
+        "reward_dzd": 100.0,
+    },
+    "buyer_variety": {
+        "code": "buyer_variety",
+        "role": "buyer",
+        "emoji": "🌍",
+        "title": "مستكشف الأسواق",
+        "desc": "اشترِ بنجاح من 7 متاجر مختلفة (+هدية 75 دج!)",
+        "target": 7,
+        "xp": 260,
+        "reward_dzd": 75.0,
+    },
+    "buyer_big_spender": {
+        "code": "buyer_big_spender",
+        "role": "buyer",
+        "emoji": "💰",
+        "title": "راعي المتاجر",
+        "desc": "تجاوزت قيمة مشترياتك المكتملة 50,000 دج (+هدية 120 دج!)",
+        "target": 50000,
+        "xp": 320,
+        "reward_dzd": 120.0,
+    },
+    "buyer_vip": {
+        "code": "buyer_vip",
+        "role": "buyer",
+        "emoji": "🏆",
+        "title": "المشتري الأسطوري",
+        "desc": "أتمم 20 طلباً مكتملاً (+هدية 200 دج رصيد محفظة!)",
+        "target": 20,
+        "xp": 450,
+        "reward_dzd": 200.0,
+    },
+    "buyer_emperor": {
+        "code": "buyer_emperor",
+        "role": "buyer",
+        "emoji": "👑",
+        "title": "إمبراطور السوق",
+        "desc": "أتمم 50 طلباً مكتملاً بنجاح (+هدية 500 دج رصيد محفظة!)",
+        "target": 50,
+        "xp": 800,
+        "reward_dzd": 500.0,
+    },
+}
+
+USER_RANKS: Final[list[tuple[int, str, str]]] = [
+    (0, "🌱", "مبتدئ"),
+    (150, "⚡", "نشيط"),
+    (400, "🥉", "محترف"),
+    (800, "🥈", "خبير"),
+    (1400, "🥇", "نجم المنصة"),
+    (2200, "💎", "بطل ماسي"),
+    (3200, "🔥", "زعيم السوق"),
+    (4500, "👑", "أسطورة Market Bot"),
+]
+
+
+def get_badge_info(code: str) -> Optional[dict[str, Any]]:
+    return BADGE_CATALOG.get((code or "").strip())
+
+
+def get_user_rank(xp: int) -> tuple[int, str, str, Optional[int]]:
+    level = 1
+    emoji, name = USER_RANKS[0][1], USER_RANKS[0][2]
+    next_xp: Optional[int] = None
+    for idx, (req_xp, em, nm) in enumerate(USER_RANKS):
+        if xp >= req_xp:
+            level = idx + 1
+            emoji, name = em, nm
+            next_xp = USER_RANKS[idx + 1][0] if idx + 1 < len(USER_RANKS) else None
+        else:
+            break
+    return level, emoji, name, next_xp
+
+
+def _badge_progress_bar(current: int, target: int, width: int = 8) -> str:
+    if target <= 0:
+        return "▓" * width
+    ratio = max(0.0, min(1.0, float(current) / float(target)))
+    filled = int(round(ratio * width))
+    return ("▓" * filled) + ("░" * (width - filled))
 
 MAX_STORE_NAME_LEN: Final[int] = 100
 MAX_STORE_BIO_LEN: Final[int] = 500
@@ -1141,6 +1507,8 @@ TEXTS: dict[str, dict[str, str]] = {
         "btn_delivery_companies": "🚚 شركات التوصيل",
         "btn_request_website": "🌐 طلب إنشاء موقع",
         "btn_admin_websites": "🌐 طلبات المواقع",
+        "btn_badges": "🏅 الشارات والمهام",
+        "btn_seller_badges": "🏅 شارات البائع",
         "dup_receipt_err": "⚠️ <b>تم استخدام صورة هذا الإيصال مسبقاً!</b>\nيرجى إرسال صورة إيصال دفع جديد وصالح.",
     },
     "en": {
@@ -1516,6 +1884,8 @@ TEXTS: dict[str, dict[str, str]] = {
         "btn_delivery_companies": "🚚 Delivery Companies",
         "btn_request_website": "🌐 Request a Website",
         "btn_admin_websites": "🌐 Website Requests",
+        "btn_badges": "🏅 Badges & Missions",
+        "btn_seller_badges": "🏅 Seller Badges",
         "dup_receipt_err": "⚠️ <b>This payment receipt was already submitted!</b>\nPlease send a new valid receipt screenshot.",
     },
     "fr": {
@@ -1891,6 +2261,8 @@ TEXTS: dict[str, dict[str, str]] = {
         "btn_delivery_companies": "🚚 Sociétés de livraison",
         "btn_request_website": "🌐 Demander un site web",
         "btn_admin_websites": "🌐 Demandes de sites web",
+        "btn_badges": "🏅 Badges & Missions",
+        "btn_seller_badges": "🏅 Badges Vendeur",
         "dup_receipt_err": "⚠️ <b>Ce reçu de paiement a déjà été utilisé !</b>\nVeuillez envoyer une nouvelle capture de paiement valide.",
     },
 }
@@ -1950,6 +2322,7 @@ class User(Base):
     saved_address: Mapped[str] = mapped_column(Text, default="")
     saved_wilaya: Mapped[str] = mapped_column(String(60), default="")
     ad_credits: Mapped[float] = mapped_column(Float, default=0.0)
+    equipped_badge: Mapped[str] = mapped_column(String(50), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -1983,6 +2356,7 @@ class Store(Base):
     deposit_threshold: Mapped[float] = mapped_column(Float, default=0.0)
     deposit_amount: Mapped[float] = mapped_column(Float, default=0.0)
     delivery_company: Mapped[str] = mapped_column(String(40), default="")
+    featured_badge: Mapped[str] = mapped_column(String(50), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     products = relationship("Product", back_populates="store", cascade="all, delete-orphan")
@@ -2366,10 +2740,25 @@ class WebsiteMessage(Base):
     request = relationship("WebsiteRequest", back_populates="messages")
 
 
+class UserBadge(Base):
+    __tablename__ = "user_badges"
+    __table_args__ = (
+        UniqueConstraint("user_tg_id", "badge_code", name="uq_user_badge"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    badge_code: Mapped[str] = mapped_column(String(50), index=True)
+    role: Mapped[str] = mapped_column(String(15), default="buyer")  # "seller" | "buyer"
+    store_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    unlocked_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 async def _ensure_schema_columns(conn) -> None:
     """Safely add new columns to existing tables BEFORE/AFTER create_all so upgrades never fail on new indexes."""
     migrations = [
         ("users", "saved_wilaya", "VARCHAR(60) DEFAULT ''"),
+        ("users", "equipped_badge", "VARCHAR(50) DEFAULT ''"),
         ("stores", "default_desk_fee", "FLOAT DEFAULT 0.0"),
         ("stores", "vip_until", "DATETIME"),
         ("stores", "auto_approve", "BOOLEAN DEFAULT 0"),
@@ -2382,6 +2771,7 @@ async def _ensure_schema_columns(conn) -> None:
         ("stores", "deposit_threshold", "FLOAT DEFAULT 0.0"),
         ("stores", "deposit_amount", "FLOAT DEFAULT 0.0"),
         ("stores", "delivery_company", "VARCHAR(40) DEFAULT ''"),
+        ("stores", "featured_badge", "VARCHAR(50) DEFAULT ''"),
         ("products", "is_deleted", "BOOLEAN DEFAULT 0"),
         ("cart_items", "quantity", "INTEGER DEFAULT 1"),
         ("orders", "store_id", "INTEGER"),
@@ -2969,6 +3359,9 @@ def store_badges(store: Optional[Store], lang: str) -> str:
         parts.append("⭐")
     if store.verified or tier == "vip":
         parts.append(t(lang, "verified_badge"))
+    fb = get_badge_info(getattr(store, "featured_badge", "") or "")
+    if fb and fb["emoji"] not in parts:
+        parts.append(fb["emoji"])
     return " ".join(parts)
 
 
@@ -3856,7 +4249,8 @@ def _buyer_menu_kb(lang: str) -> InlineKeyboardMarkup:
          InlineKeyboardButton(text=t(lang, "btn_search_store"), callback_data="nav:search_store")],
         [InlineKeyboardButton(text=t(lang, "btn_cart"), callback_data="nav:cart"),
          InlineKeyboardButton(text=t(lang, "btn_top_stores"), callback_data="nav:top_stores")],
-        [InlineKeyboardButton(text=t(lang, "btn_browse_bot_ads"), callback_data="nav:bot_ads")],
+        [InlineKeyboardButton(text=t(lang, "btn_badges"), callback_data="badges:hub:buyer:0"),
+         InlineKeyboardButton(text=t(lang, "btn_browse_bot_ads"), callback_data="nav:bot_ads")],
         [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="menu:home")],
     ])
 
@@ -3865,10 +4259,11 @@ def _account_menu_kb(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=t(lang, "btn_profile"), callback_data="nav:profile"),
          InlineKeyboardButton(text=t(lang, "btn_wallet"), callback_data="nav:wallet")],
-        [InlineKeyboardButton(text=t(lang, "btn_my_orders"), callback_data="nav:orders"),
-         InlineKeyboardButton(text=t(lang, "btn_favorites"), callback_data="nav:favs")],
-        [InlineKeyboardButton(text=t(lang, "btn_support"), callback_data="nav:support"),
-         InlineKeyboardButton(text=t(lang, "btn_lang"), callback_data="nav:lang")],
+        [InlineKeyboardButton(text=t(lang, "btn_badges"), callback_data="badges:hub:buyer:0"),
+         InlineKeyboardButton(text=t(lang, "btn_my_orders"), callback_data="nav:orders")],
+        [InlineKeyboardButton(text=t(lang, "btn_favorites"), callback_data="nav:favs"),
+         InlineKeyboardButton(text=t(lang, "btn_support"), callback_data="nav:support")],
+        [InlineKeyboardButton(text=t(lang, "btn_lang"), callback_data="nav:lang")],
         [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="menu:home")],
     ])
 
@@ -3972,29 +4367,37 @@ async def send_store_dashboard(msg_obj, store_id: int, lang: str):
         if dc_obj
         else ""
     )
+    fb_obj = get_badge_info(getattr(store, "featured_badge", "") or "")
+    fb_line = (
+        f"\n✦ 🏅 <b>شارة المتجر:</b> {fb_obj['emoji']} <b>{fb_obj['title']}</b>"
+        if fb_obj
+        else ""
+    )
     text = (
         t(lang, "store_welcome", name=esc(store.name), badge=badge, products=pcount, views=vcount, followers=fcount, rating=rating)
         + "\n━━━━━━━━━━━━━━━"
         + f"\n✦ 💳 <b>رصيد المحفظة:</b> <b>{credits:g} {DEFAULT_CURRENCY}</b>"
         + tier_line
         + dc_line
+        + fb_line
     )
     kb = [
         [InlineKeyboardButton(text=t(lang, "btn_add_product"), callback_data=f"st_add:{store.id}")],
         [InlineKeyboardButton(text=t(lang, "btn_my_products"), callback_data=f"st_list:{store.id}:1"),
          InlineKeyboardButton(text=t(lang, "btn_seller_orders"), callback_data=f"st_orders:{store.id}:1")],
         [InlineKeyboardButton(text=t(lang, "btn_delivery_companies"), callback_data=f"st_deliv_co:{store.id}"),
-         InlineKeyboardButton(text=t(lang, "btn_flash_sale"), callback_data=f"st_flash:{store.id}")],
-        [InlineKeyboardButton(text=t(lang, "btn_promos"), callback_data=f"st_promos:{store.id}"),
-         InlineKeyboardButton(text=t(lang, "btn_buy_product_ad"), callback_data=f"st_buy_ad:{store.id}")],
-        [InlineKeyboardButton(text=t(lang, "btn_store_plans"), callback_data=f"st_vip:{store.id}"),
-         InlineKeyboardButton(text=f"{t(lang, 'btn_wallet')} ({credits:g} {DEFAULT_CURRENCY})", callback_data=f"st_wallet:{store.id}")],
-        [InlineKeyboardButton(text=t(lang, "btn_my_stats"), callback_data=f"st_stats:{store.id}"),
-         InlineKeyboardButton(text=t(lang, "btn_share"), callback_data=f"st_share:{store.id}")],
-        [InlineKeyboardButton(text=t(lang, "btn_seller_broadcast"), callback_data=f"st_broadcast:{store.id}"),
-         InlineKeyboardButton(text=t(lang, "btn_settings"), callback_data=f"st_settings:{store.id}")],
-        [InlineKeyboardButton(text=t(lang, "btn_request_website"), callback_data=f"st_web_hub:{store.id}"),
-         InlineKeyboardButton(text=t(lang, "btn_seller_guide"), callback_data=f"st_guide:{store.id}")],
+         InlineKeyboardButton(text=t(lang, "btn_seller_badges"), callback_data=f"badges:hub:seller:{store.id}")],
+        [InlineKeyboardButton(text=t(lang, "btn_flash_sale"), callback_data=f"st_flash:{store.id}"),
+         InlineKeyboardButton(text=t(lang, "btn_promos"), callback_data=f"st_promos:{store.id}")],
+        [InlineKeyboardButton(text=t(lang, "btn_buy_product_ad"), callback_data=f"st_buy_ad:{store.id}"),
+         InlineKeyboardButton(text=t(lang, "btn_store_plans"), callback_data=f"st_vip:{store.id}")],
+        [InlineKeyboardButton(text=f"{t(lang, 'btn_wallet')} ({credits:g} {DEFAULT_CURRENCY})", callback_data=f"st_wallet:{store.id}"),
+         InlineKeyboardButton(text=t(lang, "btn_my_stats"), callback_data=f"st_stats:{store.id}")],
+        [InlineKeyboardButton(text=t(lang, "btn_share"), callback_data=f"st_share:{store.id}"),
+         InlineKeyboardButton(text=t(lang, "btn_seller_broadcast"), callback_data=f"st_broadcast:{store.id}")],
+        [InlineKeyboardButton(text=t(lang, "btn_settings"), callback_data=f"st_settings:{store.id}"),
+         InlineKeyboardButton(text=t(lang, "btn_request_website"), callback_data=f"st_web_hub:{store.id}")],
+        [InlineKeyboardButton(text=t(lang, "btn_seller_guide"), callback_data=f"st_guide:{store.id}")],
     ]
     if total_stores < max_allowed:
         kb.append([InlineKeyboardButton(text=t(lang, "add_new_store"), callback_data="nav:become_seller")])
@@ -4609,17 +5012,34 @@ async def view_profile_for_user(target_msg: Message, uid: int):
     lang = await get_lang(uid)
     async with Session() as s:
         u = await ensure_user(s, uid, lang)
+        unlocked_codes = (
+            await s.execute(select(UserBadge.badge_code).where(UserBadge.user_tg_id == uid))
+        ).scalars().all()
         await s.commit()
     name = esc(u.saved_name) if u.saved_name else "غير محدد"
     phone = esc(u.saved_phone) if u.saved_phone else "غير محدد"
     addr = esc(u.saved_address) if u.saved_address else "غير محدد"
+    total_xp = sum((get_badge_info(c) or {}).get("xp", 0) for c in unlocked_codes)
+    lvl, r_em, r_nm, _ = get_user_rank(total_xp)
+    eq = get_badge_info(getattr(u, "equipped_badge", "") or "")
+    eq_line = f"{eq['emoji']} <b>{eq['title']}</b>" if eq else "<i>لم تُحدَّد بعد</i>"
+    badge_summary = (
+        f"\n━━━━━━━━━━━━━━━\n"
+        f"✦ 🎖️ <b>المرتبة:</b> {r_em} <b>{r_nm}</b> (المستوى {lvl} • {total_xp} XP)\n"
+        f"✦ 🏅 <b>شارتك المعروضة:</b> {eq_line}\n"
+        f"✦ 🏆 <b>الشارات المفتوحة:</b> {len(unlocked_codes)} / {len(BADGE_CATALOG)}"
+    )
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t(lang, "btn_badges"), callback_data="badges:hub:buyer:0")],
         [InlineKeyboardButton(text=t(lang, "btn_edit_profile_name"), callback_data="prof_edit:name")],
         [InlineKeyboardButton(text=t(lang, "btn_edit_profile_phone"), callback_data="prof_edit:phone")],
         [InlineKeyboardButton(text=t(lang, "btn_edit_profile_address"), callback_data="prof_edit:address")],
         [InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:account")],
     ])
-    await target_msg.answer(t(lang, "profile_menu", name=name, phone=phone, address=addr), reply_markup=kb)
+    await target_msg.answer(
+        t(lang, "profile_menu", name=name, phone=phone, address=addr) + badge_summary,
+        reply_markup=kb,
+    )
 
 
 @buyer_router.message(F.text.in_([t(l, "btn_profile") for l in LANGS]))
@@ -6855,16 +7275,24 @@ async def do_rate(cb: CallbackQuery, state: FSMContext):
 async def skip_comment(cb: CallbackQuery, state: FSMContext):
     lang = await get_lang(cb.from_user.id)
     data = await state.get_data()
-    if data.get("rev_store_id"):
+    rev_sid = data.get("rev_store_id")
+    owner_uid = None
+    if rev_sid:
         try:
             async with Session() as s:
-                s.add(Review(store_id=data["rev_store_id"], buyer_tg_id=cb.from_user.id, rating=data["rev_rating"], comment=""))
+                s.add(Review(store_id=rev_sid, buyer_tg_id=cb.from_user.id, rating=data["rev_rating"], comment=""))
+                st_obj = await s.get(Store, rev_sid)
+                owner_uid = st_obj.owner_tg_id if st_obj else None
                 await s.commit()
         except IntegrityError:
             pass
     await state.clear()
     with suppress(Exception):
         await cb.message.edit_text(t(lang, "rating_thanks"))
+    with suppress(Exception):
+        await evaluate_user_badges(cb.bot, cb.from_user.id, notify=True)
+        if owner_uid:
+            await evaluate_user_badges(cb.bot, owner_uid, notify=True)
     await cb.answer()
 
 
@@ -6872,22 +7300,30 @@ async def skip_comment(cb: CallbackQuery, state: FSMContext):
 async def review_comment(message: Message, state: FSMContext):
     lang = await get_lang(message.from_user.id)
     data = await state.get_data()
-    if data.get("rev_store_id"):
+    rev_sid = data.get("rev_store_id")
+    owner_uid = None
+    if rev_sid:
         try:
             async with Session() as s:
                 s.add(
                     Review(
-                        store_id=data["rev_store_id"],
+                        store_id=rev_sid,
                         buyer_tg_id=message.from_user.id,
                         rating=data["rev_rating"],
                         comment=(message.text or "").strip()[:500],
                     )
                 )
+                st_obj = await s.get(Store, rev_sid)
+                owner_uid = st_obj.owner_tg_id if st_obj else None
                 await s.commit()
         except IntegrityError:
             pass
     await state.clear()
     await message.answer(t(lang, "rating_thanks"), reply_markup=await get_main_kb(message.from_user.id, lang))
+    with suppress(Exception):
+        await evaluate_user_badges(message.bot, message.from_user.id, notify=True)
+        if owner_uid:
+            await evaluate_user_badges(message.bot, owner_uid, notify=True)
 
 
 @buyer_router.callback_query(F.data.startswith("rep_prod:"))
@@ -9142,6 +9578,7 @@ async def _apply_order_status(bot: Bot, oid: int, new_status: str, tracking_info
         buyer_name = order.buyer_name
         saved_tracking = order.tracking_info
         store_dc_code = ""
+        seller_tg_id = order.seller_tg_id
         if order.store_id:
             st_row = await s.get(Store, order.store_id)
             if st_row and st_row.delivery_company:
@@ -9168,6 +9605,11 @@ async def _apply_order_status(bot: Bot, oid: int, new_status: str, tracking_info
             if new_status == "shipped" and saved_tracking:
                 txt += f"\n🔎 <b>رقم التتبع:</b> <code>{esc(saved_tracking)}</code>"
             await bot.send_message(buyer_tg_id, txt, reply_markup=reply_kb)
+    if new_status == "completed":
+        with suppress(Exception):
+            await evaluate_user_badges(bot, buyer_tg_id, notify=True)
+            if seller_tg_id:
+                await evaluate_user_badges(bot, seller_tg_id, notify=True)
     return True
 
 
@@ -10181,6 +10623,8 @@ async def admin_approve_product(cb: CallbackQuery):
         with suppress(Exception):
             sl = await get_lang(owner_id)
             await cb.bot.send_message(owner_id, t(sl, "product_approved_notify", title=esc(ptitle)))
+        with suppress(Exception):
+            await evaluate_user_badges(cb.bot, owner_id, notify=True)
     posted_ch = await publish_product_to_channel(cb.bot, pid)
     if followers:
         async def _notify_approved_followers():
@@ -11855,9 +12299,22 @@ def _format_web_req_card(req: WebsiteRequest, msg_count: int = 0, for_dev: bool 
     )
 
 
+DEFAULT_DEVELOPER_USERNAME: Final[str] = "nafeaouadah"
+
+
 async def _get_dev_username() -> str:
-    val = (await get_setting("developer_username", "")).strip().lstrip("@")
-    return val
+    raw = (await get_setting("developer_username", "")).strip()
+    if raw == "__off__":
+        return ""
+    val = raw.lstrip("@")
+    return val or DEFAULT_DEVELOPER_USERNAME
+
+
+def _build_dev_dm_url(dev_user: str, prefill: str = "") -> str:
+    clean = (dev_user or DEFAULT_DEVELOPER_USERNAME).strip().lstrip("@")
+    if prefill:
+        return f"https://t.me/{clean}?text={urllib.parse.quote(prefill)}"
+    return f"https://t.me/{clean}"
 
 
 async def _render_seller_web_hub(msg_obj: Message, uid: int, sid: int, lang: str, edit: bool = True):
@@ -11882,10 +12339,11 @@ async def _render_seller_web_hub(msg_obj: Message, uid: int, sid: int, lang: str
         )
     active_reqs = [r for r in reqs if r.status in ("pending", "negotiating", "in_progress")]
     latest_active = active_reqs[0] if active_reqs else None
+    dev_mention = f" (@{dev_user})" if dev_user else ""
     text = (
         f"🌐✨ <b>استوديو إنشاء المواقع الإلكترونية — {esc(st.name)}</b>\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"امتلك <b>موقعاً إلكترونياً احترافياً خاصاً بمتجرك</b> يرفع ثقة زبائنك ويضاعف مبيعاتك، وتواصل مباشرة مع <b>المطور</b> خطوة بخطوة! 🚀\n\n"
+        f"امتلك <b>موقعاً إلكترونياً احترافياً خاصاً بمتجرك</b> يرفع ثقة زبائنك ويضاعف مبيعاتك، وتواصل مباشرة مع <b>المطور{dev_mention}</b> خطوة بخطوة! 🚀\n\n"
         + "\n\n".join(pkg_lines)
         + "\n━━━━━━━━━━━━━━━\n"
         + f"📊 <b>طلباتك الحالية:</b> {len(reqs)} (نشطة: {len(active_reqs)})"
@@ -11893,25 +12351,23 @@ async def _render_seller_web_hub(msg_obj: Message, uid: int, sid: int, lang: str
     rows = [
         [InlineKeyboardButton(text="🚀 طلب إنشاء موقع جديد الآن", callback_data=f"st_web_new:{sid}")],
     ]
+    if dev_user:
+        dm_prefill = (
+            f"السلام عليكم، أستفسر بخصوص طلب إنشاء موقع إلكتروني #{latest_active.id} لمتجر {st.name}"
+            if latest_active
+            else f"السلام عليكم، أريد الاستفسار عن إنشاء موقع إلكتروني لمتجري ({st.name})"
+        )
+        rows.append([
+            InlineKeyboardButton(
+                text=f"💬 التحدث مع المطور مباشرة (@{dev_user})",
+                url=_build_dev_dm_url(dev_user, dm_prefill),
+            )
+        ])
     if reqs:
         rows.append([
             InlineKeyboardButton(
-                text=f"📋 طلباتي ومحادثاتي مع المطور ({len(reqs)})",
+                text=f"📋 طلباتي السابقة ({len(reqs)})",
                 callback_data=f"st_web_list:{sid}",
-            )
-        ])
-    if latest_active:
-        rows.append([
-            InlineKeyboardButton(
-                text=f"💬 متابعة المحادثة مع المطور (طلب #{latest_active.id})",
-                callback_data=f"st_web_chat:{latest_active.id}",
-            )
-        ])
-    if dev_user:
-        rows.append([
-            InlineKeyboardButton(
-                text="✈️ مراسلة المطور مباشرة على تيليجرام",
-                url=f"https://t.me/{dev_user}",
             )
         ])
     rows.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data=f"mngstore:{sid}")])
@@ -12159,13 +12615,17 @@ async def _finalize_website_request(target_msg: Message, uid: int, state: FSMCon
         + "\n\n💬 <i>سيتواصل معك المطور قريباً هنا داخل البوت، ويمكنك بدء المحادثة معه الآن مباشرة 👇</i>"
     )
     dev_user = await _get_dev_username()
-    seller_rows = [
-        [InlineKeyboardButton(text="💬 التحدث مع المطور الآن", callback_data=f"st_web_chat:{req_id}")],
-    ]
+    pkg_info = WEBSITE_PACKAGES.get(pkg_code) or WEBSITE_PACKAGES["ecommerce"]
+    seller_rows = []
     if dev_user:
+        prefill = f"السلام عليكم، أرسلت طلب إنشاء موقع #{req_id} ({pkg_info['title']}) لمتجر {st_name}"
         seller_rows.append([
-            InlineKeyboardButton(text="✈️ محادثة المطور على تيليجرام", url=f"https://t.me/{dev_user}")
+            InlineKeyboardButton(
+                text=f"💬 التحدث مع المطور مباشرة (@{dev_user})",
+                url=_build_dev_dm_url(dev_user, prefill),
+            )
         ])
+    seller_rows.append([InlineKeyboardButton(text="📩 إرسال رسالة داخل البوت", callback_data=f"st_web_chat:{req_id}")])
     seller_rows.append([InlineKeyboardButton(text="📋 عرض طلبي", callback_data=f"st_web_view:{req_id}")])
     seller_rows.append([InlineKeyboardButton(text="↩️ العودة لمتجري", callback_data=f"mngstore:{sid}")])
     await target_msg.answer(seller_card, reply_markup=InlineKeyboardMarkup(inline_keyboard=seller_rows))
@@ -12256,12 +12716,18 @@ async def _render_seller_web_view(msg_obj: Message, uid: int, req_id: int, edit:
     rows = []
     if req.live_url and req.live_url.startswith(("http://", "https://")):
         rows.append([InlineKeyboardButton(text="🌍 فتح موقعك الجاهز الآن", url=req.live_url)])
+    if dev_user and req.status != "cancelled":
+        prefill = f"السلام عليكم، أستفسر بخصوص طلب إنشاء موقع #{req.id} لمتجر {req.store_name}"
+        rows.append([
+            InlineKeyboardButton(
+                text=f"💬 التحدث مع المطور مباشرة (@{dev_user})",
+                url=_build_dev_dm_url(dev_user, prefill),
+            )
+        ])
     if req.status != "cancelled":
-        rows.append([InlineKeyboardButton(text="💬 التحدث مع المطور الآن", callback_data=f"st_web_chat:{req.id}")])
+        rows.append([InlineKeyboardButton(text="📩 رسالة سريعة داخل البوت", callback_data=f"st_web_chat:{req.id}")])
     if msg_cnt > 0:
         rows.append([InlineKeyboardButton(text=f"📜 سجل المحادثة ({msg_cnt})", callback_data=f"st_web_hist:{req.id}")])
-    if dev_user:
-        rows.append([InlineKeyboardButton(text="✈️ مراسلة المطور على تيليجرام", url=f"https://t.me/{dev_user}")])
     if req.status == "pending":
         rows.append([InlineKeyboardButton(text="❌ إلغاء الطلب", callback_data=f"st_web_cancel:{req.id}")])
     rows.append([InlineKeyboardButton(text="↩️ رجوع لطلباتي", callback_data=f"st_web_list:{req.store_id}")])
@@ -12476,11 +12942,11 @@ async def admin_web_devuser_save(message: Message, state: FSMContext):
     await state.clear()
     val = (message.text or "").strip().lstrip("@")
     if val.lower() in ("off", "none", "0", "-"):
-        val = ""
-    await set_setting("developer_username", val[:64])
-    await message.answer(
-        f"✅ تم حفظ معرّف المطور: <code>@{esc(val)}</code>" if val else "✅ تم إخفاء زر المعرّف المباشر (المحادثة تبقى داخل البوت)."
-    )
+        await set_setting("developer_username", "__off__")
+        await message.answer("✅ تم إخفاء زر المعرّف المباشر (المحادثة تبقى داخل البوت).")
+    else:
+        await set_setting("developer_username", val[:64])
+        await message.answer(f"✅ تم حفظ معرّف المطور: <code>@{esc(val)}</code>")
     await _render_admin_webreqs(message, await get_lang(message.from_user.id), edit=False)
 
 
@@ -12605,15 +13071,23 @@ async def admin_web_reply_send(message: Message, state: FSMContext):
         seller_id = req.seller_tg_id
         await s.commit()
 
+    dev_user = await _get_dev_username()
     seller_msg = (
         f"👨‍💻✨ <b>ردّ المطور على طلب موقعك #{req_id}</b>\n"
         f"━━━━━━━━━━━━━━━\n"
         f"{esc(txt) if txt else '📸 [صورة مرفقة من المطور]'}"
     )
-    seller_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="↩️ ردّ على المطور", callback_data=f"st_web_chat:{req_id}")],
-        [InlineKeyboardButton(text="📋 عرض طلبي", callback_data=f"st_web_view:{req_id}")],
-    ])
+    s_kb_rows = []
+    if dev_user:
+        s_kb_rows.append([
+            InlineKeyboardButton(
+                text=f"💬 التحدث مع المطور مباشرة (@{dev_user})",
+                url=_build_dev_dm_url(dev_user, f"السلام عليكم، بخصوص طلب الموقع #{req_id}"),
+            )
+        ])
+    s_kb_rows.append([InlineKeyboardButton(text="↩️ ردّ داخل البوت", callback_data=f"st_web_chat:{req_id}")])
+    s_kb_rows.append([InlineKeyboardButton(text="📋 عرض طلبي", callback_data=f"st_web_view:{req_id}")])
+    seller_kb = InlineKeyboardMarkup(inline_keyboard=s_kb_rows)
     with suppress(Exception):
         if photo_id:
             await message.bot.send_photo(seller_id, photo_id, caption=seller_msg[:1000], reply_markup=seller_kb)
@@ -12671,18 +13145,26 @@ async def admin_web_quote_save(message: Message, state: FSMContext):
         seller_id = req.seller_tg_id
         await s.commit()
 
+    dev_user = await _get_dev_username()
     quote_msg = (
         f"💎✨ <b>عرض سعر رسمي من المطور — طلب موقع #{req_id}</b>\n"
         f"━━━━━━━━━━━━━━━\n"
         f"✦ 💰 <b>التكلفة المقترحة:</b> <b>{price:g} {DEFAULT_CURRENCY}</b>\n"
         f"✦ ⏱️ <b>مدة التنفيذ والتسليم:</b> <b>{days} أيام</b>\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"💬 يمكنك الرد على المطور الآن للتأكيد أو مناقشة أي تعديل 👇"
+        f"💬 يمكنك مراسلة المطور مباشرة للتأكيد أو مناقشة أي تعديل 👇"
     )
-    seller_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💬 الرد على المطور", callback_data=f"st_web_chat:{req_id}")],
-        [InlineKeyboardButton(text="📋 تفاصيل الطلب", callback_data=f"st_web_view:{req_id}")],
-    ])
+    q_rows = []
+    if dev_user:
+        q_rows.append([
+            InlineKeyboardButton(
+                text=f"💬 التحدث مع المطور مباشرة (@{dev_user})",
+                url=_build_dev_dm_url(dev_user, f"السلام عليكم، أوافق/أستفسر عن عرض السعر لطلب الموقع #{req_id}"),
+            )
+        ])
+    q_rows.append([InlineKeyboardButton(text="📩 ردّ داخل البوت", callback_data=f"st_web_chat:{req_id}")])
+    q_rows.append([InlineKeyboardButton(text="📋 تفاصيل الطلب", callback_data=f"st_web_view:{req_id}")])
+    seller_kb = InlineKeyboardMarkup(inline_keyboard=q_rows)
     with suppress(Exception):
         await message.bot.send_message(seller_id, quote_msg, reply_markup=seller_kb)
     await message.answer(f"✅ تم إرسال عرض السعر ({price:g} {DEFAULT_CURRENCY} / {days} أيام) للبائع!")
@@ -12724,6 +13206,7 @@ async def admin_web_deliver_save(message: Message, state: FSMContext):
         st_name = req.store_name
         await s.commit()
 
+    dev_user = await _get_dev_username()
     delivery_msg = (
         f"🎉🌍 <b>مبارك لك! موقعك الإلكتروني جاهز ومُسلّم الآن</b>\n"
         f"━━━━━━━━━━━━━━━\n"
@@ -12733,10 +13216,17 @@ async def admin_web_deliver_save(message: Message, state: FSMContext):
         f"━━━━━━━━━━━━━━━\n"
         f"نتمنى لك مبيعات موفّقة! يمكنك دائماً مراسلة المطور لأي دعم أو تحديث ✨"
     )
-    seller_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🌍 فتح موقعك الآن", url=url)],
-        [InlineKeyboardButton(text="💬 مراسلة المطور", callback_data=f"st_web_chat:{req_id}")],
-    ])
+    d_rows = [[InlineKeyboardButton(text="🌍 فتح موقعك الآن", url=url)]]
+    if dev_user:
+        d_rows.append([
+            InlineKeyboardButton(
+                text=f"💬 التحدث مع المطور مباشرة (@{dev_user})",
+                url=_build_dev_dm_url(dev_user, f"السلام عليكم، شكراً على تسليم الموقع للطلب #{req_id}"),
+            )
+        ])
+    else:
+        d_rows.append([InlineKeyboardButton(text="💬 مراسلة المطور", callback_data=f"st_web_chat:{req_id}")])
+    seller_kb = InlineKeyboardMarkup(inline_keyboard=d_rows)
     with suppress(Exception):
         await message.bot.send_message(seller_id, delivery_msg, reply_markup=seller_kb, disable_web_page_preview=True)
     await message.answer(f"🎉 تم تسليم الموقع وإشعار البائع بنجاح!")
@@ -12760,17 +13250,538 @@ async def admin_web_change_status(cb: CallbackQuery):
         seller_id = req.seller_tg_id
         await s.commit()
     st_lbl = WEBSITE_STATUS_LABELS[new_st]
+    dev_user = await _get_dev_username()
+    st_rows = []
+    if dev_user:
+        st_rows.append([
+            InlineKeyboardButton(
+                text=f"💬 التحدث مع المطور مباشرة (@{dev_user})",
+                url=_build_dev_dm_url(dev_user, f"السلام عليكم، بخصوص تحديث طلب الموقع #{req_id}"),
+            )
+        ])
+    st_rows.append([InlineKeyboardButton(text="📋 عرض الطلب", callback_data=f"st_web_view:{req_id}")])
     with suppress(Exception):
         await cb.bot.send_message(
             seller_id,
             f"🔔🌐 <b>تحديث حالة طلب موقعك #{req_id}</b>\n━━━━━━━━━━━━━━━\n📌 الحالة الجديدة: <b>{st_lbl}</b>",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="💬 محادثة المطور", callback_data=f"st_web_chat:{req_id}")],
-                [InlineKeyboardButton(text="📋 عرض الطلب", callback_data=f"st_web_view:{req_id}")],
-            ]),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=st_rows),
         )
     await cb.answer(f"✅ تم تحديث الحالة إلى: {st_lbl}", show_alert=True)
     await _render_admin_web_view(cb.message, req_id, edit=True)
+
+
+# ════════════════════════════════════════════════════════════════════
+# 8.6 LEGENDARY BADGES, MISSIONS & LEADERBOARD ENGINE (SELLERS & BUYERS)
+# ════════════════════════════════════════════════════════════════════
+
+async def _compute_user_mission_progress(s, uid: int) -> tuple[dict[str, tuple[int, int, bool]], Optional[int]]:
+    """Return {badge_code: (current_value, target_value, is_achieved)} and primary store_id."""
+    u = (await s.execute(select(User).where(User.tg_id == uid))).scalar_one_or_none()
+    stores = (await s.execute(select(Store).where(Store.owner_tg_id == uid).order_by(Store.id.asc()))).scalars().all()
+    store_ids = [st.id for st in stores]
+    primary_sid = store_ids[0] if store_ids else None
+
+    # Seller metrics
+    approved_prods = 0
+    seller_done_orders = 0
+    seller_followers = 0
+    seller_rev_cnt = 0
+    seller_rev_avg = 0.0
+    seller_five_star_cnt = 0
+    seller_promos = 0
+    seller_flash_cnt = 0
+    seller_wilayas_cnt = 0
+    seller_views_total = 0
+    seller_verified_or_pro = 0
+    brand_steps = 0
+    if store_ids:
+        approved_prods = (
+            await s.execute(
+                select(func.count(Product.id)).where(
+                    Product.store_id.in_(store_ids),
+                    Product.status == "approved",
+                    Product.is_deleted.is_(False),
+                )
+            )
+        ).scalar() or 0
+        seller_views_total = int(
+            (
+                await s.execute(
+                    select(func.coalesce(func.sum(Product.views), 0)).where(
+                        Product.store_id.in_(store_ids),
+                        Product.is_deleted.is_(False),
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+        seller_flash_cnt = (
+            await s.execute(
+                select(func.count(Product.id)).where(
+                    Product.store_id.in_(store_ids),
+                    Product.flash_sale_price.is_not(None),
+                    Product.is_deleted.is_(False),
+                )
+            )
+        ).scalar() or 0
+        seller_promos = (
+            await s.execute(select(func.count(PromoCode.id)).where(PromoCode.store_id.in_(store_ids)))
+        ).scalar() or 0
+        seller_wilayas_cnt = (
+            await s.execute(
+                select(func.count(func.distinct(StoreDeliveryRate.wilaya_code))).where(
+                    StoreDeliveryRate.store_id.in_(store_ids)
+                )
+            )
+        ).scalar() or 0
+        seller_done_orders = (
+            await s.execute(
+                select(func.count(Order.id)).where(
+                    or_(Order.seller_tg_id == uid, Order.store_id.in_(store_ids)),
+                    Order.status == "completed",
+                )
+            )
+        ).scalar() or 0
+        seller_followers = (
+            await s.execute(select(func.count(StoreFollower.id)).where(StoreFollower.store_id.in_(store_ids)))
+        ).scalar() or 0
+        rev_row = (
+            await s.execute(
+                select(func.count(Review.id), func.coalesce(func.avg(Review.rating), 0.0)).where(
+                    Review.store_id.in_(store_ids)
+                )
+            )
+        ).one()
+        seller_rev_cnt = int(rev_row[0] or 0)
+        seller_rev_avg = float(rev_row[1] or 0.0)
+        seller_five_star_cnt = (
+            await s.execute(
+                select(func.count(Review.id)).where(Review.store_id.in_(store_ids), Review.rating == 5)
+            )
+        ).scalar() or 0
+        web_req_cnt = (
+            await s.execute(select(func.count(WebsiteRequest.id)).where(WebsiteRequest.seller_tg_id == uid))
+        ).scalar() or 0
+        for st in stores:
+            steps = (
+                (1 if (st.logo_file_id or "").strip() else 0)
+                + (1 if (st.bio or "").strip() else 0)
+                + (1 if (st.delivery_company or "").strip() else 0)
+            )
+            if steps > brand_steps:
+                brand_steps = steps
+            if st.verified or effective_store_tier(st) in ("pro", "vip"):
+                seller_verified_or_pro = 1
+        if web_req_cnt >= 1:
+            seller_verified_or_pro = 1
+
+    # Buyer metrics
+    buyer_done = (
+        await s.execute(
+            select(func.count(Order.id)).where(Order.buyer_tg_id == uid, Order.status == "completed")
+        )
+    ).scalar() or 0
+    buyer_cancelled = (
+        await s.execute(
+            select(func.count(Order.id)).where(Order.buyer_tg_id == uid, Order.status == "cancelled")
+        )
+    ).scalar() or 0
+    buyer_distinct_stores = (
+        await s.execute(
+            select(func.count(func.distinct(Order.store_id))).where(
+                Order.buyer_tg_id == uid,
+                Order.status == "completed",
+            )
+        )
+    ).scalar() or 0
+    buyer_total_spent = int(
+        (
+            await s.execute(
+                select(func.coalesce(func.sum(Order.price * Order.quantity), 0.0)).where(
+                    Order.buyer_tg_id == uid,
+                    Order.status == "completed",
+                )
+            )
+        ).scalar()
+        or 0
+    )
+    buyer_favs = (
+        await s.execute(select(func.count(Favorite.id)).where(Favorite.user_tg_id == uid))
+    ).scalar() or 0
+    buyer_follows = (
+        await s.execute(select(func.count(StoreFollower.id)).where(StoreFollower.user_tg_id == uid))
+    ).scalar() or 0
+    buyer_reviews = (
+        await s.execute(select(func.count(Review.id)).where(Review.buyer_tg_id == uid))
+    ).scalar() or 0
+    profile_steps = 0
+    if u:
+        profile_steps = (
+            (1 if (u.saved_name or "").strip() else 0)
+            + (1 if (u.saved_phone or "").strip() else 0)
+            + (1 if (u.saved_address or "").strip() else 0)
+        )
+
+    progress: dict[str, tuple[int, int, bool]] = {
+        # Seller (16)
+        "seller_starter": (min(1, approved_prods), 1, bool(store_ids and approved_prods >= 1)),
+        "seller_brand": (brand_steps, 3, bool(store_ids and brand_steps >= 3)),
+        "seller_first_sale": (min(1, seller_done_orders), 1, seller_done_orders >= 1),
+        "seller_promo_master": (min(1, seller_promos), 1, seller_promos >= 1),
+        "seller_flash_king": (min(1, seller_flash_cnt), 1, seller_flash_cnt >= 1),
+        "seller_58_wilayas": (min(30, seller_wilayas_cnt), 30, seller_wilayas_cnt >= 30),
+        "seller_catalog": (min(10, approved_prods), 10, approved_prods >= 10),
+        "seller_mega_catalog": (min(30, approved_prods), 30, approved_prods >= 30),
+        "seller_views_star": (min(500, seller_views_total), 500, seller_views_total >= 500),
+        "seller_pro": (min(10, seller_done_orders), 10, seller_done_orders >= 10),
+        "seller_loved": (
+            min(5, seller_rev_cnt),
+            5,
+            seller_rev_cnt >= 5 and seller_rev_avg >= 4.5,
+        ),
+        "seller_five_star": (min(10, seller_five_star_cnt), 10, seller_five_star_cnt >= 10),
+        "seller_influencer": (min(25, seller_followers), 25, seller_followers >= 25),
+        "seller_verified_pro": (seller_verified_or_pro, 1, seller_verified_or_pro >= 1),
+        "seller_master": (min(25, seller_done_orders), 25, seller_done_orders >= 25),
+        "seller_legend": (min(50, seller_done_orders), 50, seller_done_orders >= 50),
+        # Buyer (16)
+        "buyer_complete": (profile_steps, 3, profile_steps >= 3),
+        "buyer_first": (min(1, buyer_done), 1, buyer_done >= 1),
+        "buyer_explorer": (min(5, buyer_favs), 5, buyer_favs >= 5),
+        "buyer_collector": (min(20, buyer_favs), 20, buyer_favs >= 20),
+        "buyer_fan": (min(3, buyer_follows), 3, buyer_follows >= 3),
+        "buyer_superfan": (min(10, buyer_follows), 10, buyer_follows >= 10),
+        "buyer_multi_store": (min(3, buyer_distinct_stores), 3, buyer_distinct_stores >= 3),
+        "buyer_critic": (min(3, buyer_reviews), 3, buyer_reviews >= 3),
+        "buyer_super_critic": (min(10, buyer_reviews), 10, buyer_reviews >= 10),
+        "buyer_trusted": (
+            min(3, buyer_done) if buyer_cancelled == 0 else 0,
+            3,
+            buyer_done >= 3 and buyer_cancelled == 0,
+        ),
+        "buyer_loyal": (min(5, buyer_done), 5, buyer_done >= 5),
+        "buyer_patron": (min(10, buyer_done), 10, buyer_done >= 10),
+        "buyer_variety": (min(7, buyer_distinct_stores), 7, buyer_distinct_stores >= 7),
+        "buyer_big_spender": (min(50000, buyer_total_spent), 50000, buyer_total_spent >= 50000),
+        "buyer_vip": (min(20, buyer_done), 20, buyer_done >= 20),
+        "buyer_emperor": (min(50, buyer_done), 50, buyer_done >= 50),
+    }
+    return progress, primary_sid
+
+
+async def evaluate_user_badges(bot: Optional[Bot], uid: int, notify: bool = True) -> list[dict[str, Any]]:
+    """Evaluate all 32 Seller & Buyer missions, unlock new badges, award DZD bonuses, and celebrate!"""
+    if not uid:
+        return []
+    newly_unlocked: list[dict[str, Any]] = []
+    async with Session() as s:
+        u = await ensure_user(s, uid, DEFAULT_LANG)
+        existing = set(
+            (await s.execute(select(UserBadge.badge_code).where(UserBadge.user_tg_id == uid))).scalars().all()
+        )
+        progress, primary_sid = await _compute_user_mission_progress(s, uid)
+        for code, meta in BADGE_CATALOG.items():
+            if code in existing:
+                continue
+            _cur, _tgt, achieved = progress.get(code, (0, 1, False))
+            if not achieved:
+                continue
+            s.add(
+                UserBadge(
+                    user_tg_id=uid,
+                    badge_code=code,
+                    role=meta["role"],
+                    store_id=primary_sid if meta["role"] == "seller" else None,
+                )
+            )
+            reward = float(meta.get("reward_dzd") or 0.0)
+            if reward > 0:
+                await record_wallet_tx(
+                    s,
+                    u,
+                    reward,
+                    "badge_reward",
+                    f"مكافأة شارة {meta['emoji']} {meta['title']}",
+                    ref_code=code,
+                )
+            if not u.equipped_badge and meta["role"] == "buyer":
+                u.equipped_badge = code
+            if primary_sid and meta["role"] == "seller":
+                st = await s.get(Store, primary_sid)
+                if st and not st.featured_badge:
+                    st.featured_badge = code
+            newly_unlocked.append(meta)
+        if newly_unlocked:
+            await s.commit()
+
+    if notify and bot and newly_unlocked:
+        for meta in newly_unlocked:
+            reward = float(meta.get("reward_dzd") or 0.0)
+            reward_line = f"\n🎁 <b>مكافأة فورية:</b> +{reward:g} {DEFAULT_CURRENCY} أُضيفت لمحفظتك!" if reward > 0 else ""
+            role_lbl = "شارة بائع 🏪" if meta["role"] == "seller" else "شارة مشتري 🛍️"
+            msg = (
+                f"🏆🎉 <b>مبارك! حصلت على شارة جديدة!</b>\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"{meta['emoji']} <b>{meta['title']}</b> ({role_lbl})\n"
+                f"<i>{meta['desc']}</i>\n"
+                f"✦ ⚡ <b>+{meta['xp']} XP</b>{reward_line}\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"✨ يمكنك الآن إظهار هذه الشارة في ملفك أو بجانب اسم متجرك!"
+            )
+            cb_target = f"badges:hub:{meta['role']}:0:1"
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🏅 عرض شاراتي وتفعيلها", callback_data=cb_target)]
+            ])
+            with suppress(Exception):
+                await bot.send_message(uid, msg, reply_markup=kb)
+    return newly_unlocked
+
+
+BADGES_PER_PAGE: Final[int] = 8
+
+
+async def _render_badges_hub(
+    msg_obj: Message,
+    bot: Bot,
+    uid: int,
+    role: str = "buyer",
+    sid: int = 0,
+    page: int = 1,
+    edit: bool = True,
+):
+    if role not in ("buyer", "seller"):
+        role = "buyer"
+    newly = await evaluate_user_badges(bot, uid, notify=False)
+    async with Session() as s:
+        u = await ensure_user(s, uid, DEFAULT_LANG)
+        unlocked_set = set(
+            (await s.execute(select(UserBadge.badge_code).where(UserBadge.user_tg_id == uid))).scalars().all()
+        )
+        progress, primary_sid = await _compute_user_mission_progress(s, uid)
+        if role == "seller" and not sid and primary_sid:
+            sid = primary_sid
+        st = await s.get(Store, sid) if sid else None
+        await s.commit()
+
+    total_xp = sum((get_badge_info(c) or {}).get("xp", 0) for c in unlocked_set)
+    lvl, r_em, r_nm, next_xp = get_user_rank(total_xp)
+    next_str = f" (المستوى القادم عند {next_xp} XP)" if next_xp else " (أعلى مستوى في المنصة! 👑)"
+
+    if role == "seller" and st:
+        active_code = st.featured_badge or ""
+        active_label = "شارة المتجر البارزة"
+    else:
+        active_code = u.equipped_badge or ""
+        active_label = "شارتك المعروضة"
+    eq_meta = get_badge_info(active_code)
+    eq_str = f"{eq_meta['emoji']} <b>{eq_meta['title']}</b>" if eq_meta else "<i>غير محددة بعد</i>"
+
+    role_badges = [m for m in BADGE_CATALOG.values() if m["role"] == role]
+    role_unlocked_cnt = sum(1 for m in role_badges if m["code"] in unlocked_set)
+    total_pages = max(1, (len(role_badges) + BADGES_PER_PAGE - 1) // BADGES_PER_PAGE)
+    page = max(1, min(page, total_pages))
+    page_slice = role_badges[(page - 1) * BADGES_PER_PAGE : page * BADGES_PER_PAGE]
+
+    title_hdr = (
+        f"🏪🏅 <b>شارات ومهام البائع — {esc(st.name)}</b> (صفحة {page}/{total_pages})"
+        if role == "seller" and st
+        else f"🛍️🏅 <b>شارات ومهام المشتري</b> (صفحة {page}/{total_pages})"
+    )
+    unlock_banner = ""
+    if newly:
+        names = "، ".join(f"{m['emoji']} {m['title']}" for m in newly)
+        unlock_banner = f"\n🎉 <b>تم فتح شارة جديدة الآن:</b> {names}!\n"
+
+    mission_lines = []
+    for m in page_slice:
+        cur, tgt, _ach = progress.get(m["code"], (0, m["target"], False))
+        rew = f" + 🎁 {m['reward_dzd']:g} دج" if m["reward_dzd"] > 0 else ""
+        if m["code"] in unlocked_set:
+            mission_lines.append(
+                f"✅ {m['emoji']} <b>{m['title']}</b> <i>(+{m['xp']} XP{rew})</i>\n"
+                f"   └ {m['desc']}"
+            )
+        else:
+            bar = _badge_progress_bar(cur, tgt)
+            mission_lines.append(
+                f"🔒 {m['emoji']} <b>{m['title']}</b> <i>(+{m['xp']} XP{rew})</i>\n"
+                f"   └ {m['desc']}\n"
+                f"   └ <code>{bar}</code> ({cur:,}/{tgt:,})"
+            )
+
+    text = (
+        f"{title_hdr}\n"
+        f"━━━━━━━━━━━━━━━{unlock_banner}"
+        f"✦ 🎖️ <b>المرتبة:</b> {r_em} <b>{r_nm}</b> (Lv.{lvl} • <b>{total_xp} XP</b>){next_str}\n"
+        f"✦ ✨ <b>{active_label}:</b> {eq_str}\n"
+        f"✦ 📊 <b>الإنجاز:</b> {role_unlocked_cnt}/{len(role_badges)} في هذا القسم | الإجمالي: {len(unlocked_set)}/{len(BADGE_CATALOG)}\n"
+        f"━━━━━━━━━━━━━━━\n"
+        + "\n\n".join(mission_lines)
+    )
+
+    other_role = "buyer" if role == "seller" else "seller"
+    other_lbl = "🛍️ عرض شارات المشتري (16)" if role == "seller" else "🏪 عرض شارات البائع (16)"
+    rows = []
+    if total_pages > 1:
+        nav_row = []
+        if page > 1:
+            nav_row.append(InlineKeyboardButton(text="◀️ الصفحة السابقة", callback_data=f"badges:hub:{role}:{sid}:{page - 1}"))
+        if page < total_pages:
+            nav_row.append(InlineKeyboardButton(text="الصفحة التالية ▶️", callback_data=f"badges:hub:{role}:{sid}:{page + 1}"))
+        if nav_row:
+            rows.append(nav_row)
+    rows.append([InlineKeyboardButton(text=other_lbl, callback_data=f"badges:hub:{other_role}:{sid}:1")])
+    if role_unlocked_cnt > 0:
+        equip_lbl = "✨ اختيار شارة المتجر البارزة" if (role == "seller" and st) else "✨ اختيار شارتي المعروضة"
+        rows.append([InlineKeyboardButton(text=equip_lbl, callback_data=f"badges:equip_menu:{role}:{sid}")])
+    rows.append([
+        InlineKeyboardButton(text="🔄 تحديث المهام", callback_data=f"badges:hub:{role}:{sid}:{page}"),
+        InlineKeyboardButton(text="🏆 لوحة الأبطال", callback_data=f"badges:lb:{role}:{sid}"),
+    ])
+    back_cb = f"mngstore:{sid}" if (role == "seller" and sid) else "nav:account"
+    rows.append([InlineKeyboardButton(text="↩️ رجوع", callback_data=back_cb)])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    if edit:
+        try:
+            await msg_obj.edit_text(text[:4000], reply_markup=kb)
+            return
+        except Exception:
+            pass
+    await msg_obj.answer(text[:4000], reply_markup=kb)
+
+
+@buyer_router.callback_query(F.data.startswith("badges:hub:"))
+async def badges_hub_cb(cb: CallbackQuery):
+    parts = cb.data.split(":")
+    role = parts[2] if len(parts) > 2 else "buyer"
+    sid = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+    page = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 1
+    await _render_badges_hub(cb.message, cb.bot, cb.from_user.id, role=role, sid=sid, page=page, edit=True)
+    await cb.answer()
+
+
+@buyer_router.callback_query(F.data.startswith("badges:equip_menu:"))
+async def badges_equip_menu_cb(cb: CallbackQuery):
+    parts = cb.data.split(":")
+    role = parts[2] if len(parts) > 2 else "buyer"
+    sid = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+    uid = cb.from_user.id
+    async with Session() as s:
+        unlocked = (
+            await s.execute(select(UserBadge.badge_code).where(UserBadge.user_tg_id == uid))
+        ).scalars().all()
+        u = await ensure_user(s, uid, DEFAULT_LANG)
+        st = await s.get(Store, sid) if (role == "seller" and sid) else None
+    current_eq = (st.featured_badge if st else u.equipped_badge) or ""
+    role_unlocked = [c for c in unlocked if (get_badge_info(c) or {}).get("role") == role]
+    if not role_unlocked:
+        return await cb.answer("🔒 لم تفتح أي شارة في هذا القسم بعد! أكمل مهمة أولاً.", show_alert=True)
+    rows = []
+    cur_row: list[InlineKeyboardButton] = []
+    for c in role_unlocked:
+        m = get_badge_info(c)
+        if not m:
+            continue
+        mark = " ✅" if c == current_eq else ""
+        cur_row.append(
+            InlineKeyboardButton(
+                text=f"{m['emoji']} {m['title']}{mark}",
+                callback_data=f"badges:equip:{role}:{sid}:{c}",
+            )
+        )
+        if len(cur_row) == 2:
+            rows.append(cur_row)
+            cur_row = []
+    if cur_row:
+        rows.append(cur_row)
+    rows.append([InlineKeyboardButton(text="↩️ رجوع للشارات", callback_data=f"badges:hub:{role}:{sid}:1")])
+    target_desc = f"متجر <b>{esc(st.name)}</b> (ستظهر أمام جميع المشترين!)" if st else "ملفك الشخصي"
+    text = f"✨🏅 <b>اختر الشارة التي تريد إبرازها في {target_desc}:</b>"
+    try:
+        await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    except Exception:
+        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await cb.answer()
+
+
+@buyer_router.callback_query(F.data.startswith("badges:equip:"))
+async def badges_equip_apply_cb(cb: CallbackQuery):
+    parts = cb.data.split(":")
+    role = parts[2]
+    sid = int(parts[3]) if parts[3].isdigit() else 0
+    code = parts[4]
+    uid = cb.from_user.id
+    m = get_badge_info(code)
+    if not m:
+        return await cb.answer("❌ شارة غير صالحة.", show_alert=True)
+    async with Session() as s:
+        has_it = (
+            await s.execute(
+                select(UserBadge.id).where(UserBadge.user_tg_id == uid, UserBadge.badge_code == code)
+            )
+        ).scalar_one_or_none()
+        if not has_it:
+            return await cb.answer("🔒 هذه الشارة غير مفتوحة بعد.", show_alert=True)
+        if role == "seller" and sid:
+            st = await s.get(Store, sid)
+            if not st or st.owner_tg_id != uid:
+                return await cb.answer("⛔ غير مصرح.", show_alert=True)
+            st.featured_badge = code
+        else:
+            u = await ensure_user(s, uid, DEFAULT_LANG)
+            u.equipped_badge = code
+        await s.commit()
+    await cb.answer(f"✅ تم تفعيل شارة {m['emoji']} {m['title']}!", show_alert=True)
+    await _render_badges_hub(cb.message, cb.bot, uid, role=role, sid=sid, edit=True)
+
+
+@buyer_router.callback_query(F.data.startswith("badges:lb:"))
+async def badges_leaderboard_cb(cb: CallbackQuery):
+    parts = cb.data.split(":")
+    role = parts[2] if len(parts) > 2 else "buyer"
+    sid = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+    async with Session() as s:
+        all_rows = (await s.execute(select(UserBadge.user_tg_id, UserBadge.badge_code))).all()
+        xp_by_user: dict[int, int] = {}
+        cnt_by_user: dict[int, int] = {}
+        for u_id, b_code in all_rows:
+            xp_by_user[u_id] = xp_by_user.get(u_id, 0) + int((get_badge_info(b_code) or {}).get("xp", 0))
+            cnt_by_user[u_id] = cnt_by_user.get(u_id, 0) + 1
+        top_uids = sorted(xp_by_user.keys(), key=lambda x: (xp_by_user[x], cnt_by_user[x]), reverse=True)[:10]
+        users_map: dict[int, User] = {}
+        stores_map: dict[int, str] = {}
+        if top_uids:
+            u_objs = (await s.execute(select(User).where(User.tg_id.in_(top_uids)))).scalars().all()
+            users_map = {u.tg_id: u for u in u_objs}
+            st_objs = (await s.execute(select(Store).where(Store.owner_tg_id.in_(top_uids)))).scalars().all()
+            for st in st_objs:
+                stores_map.setdefault(st.owner_tg_id, st.name)
+
+    medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+    lines = ["🏆✨ <b>لوحة الشرف — أبطال Market Bot</b>", "━━━━━━━━━━━━━━━"]
+    if not top_uids:
+        lines.append("📭 لم يفتح أحد شارات بعد — كن أول بطل يعتلي الصدارة! 🚀")
+    else:
+        for idx, u_id in enumerate(top_uids):
+            u = users_map.get(u_id)
+            disp_name = stores_map.get(u_id) or (u.saved_name if u and u.saved_name else f"عضو #{str(u_id)[-4:]}")
+            eq = get_badge_info(u.equipped_badge) if u and u.equipped_badge else None
+            eq_em = f" {eq['emoji']}" if eq else ""
+            lvl, r_em, r_nm, _ = get_user_rank(xp_by_user[u_id])
+            you_tag = " <b>(أنت)</b>" if u_id == cb.from_user.id else ""
+            lines.append(
+                f"{medals[idx]} <b>{esc(disp_name)}</b>{eq_em}{you_tag}\n"
+                f"   ✦ {r_em} {r_nm} • <b>{xp_by_user[u_id]} XP</b> • 🏅 {cnt_by_user[u_id]} شارة"
+            )
+    lines.append("━━━━━━━━━━━━━━━\n💡 <i>أكمل المهام لترفع مستواك وتتصدر القائمة!</i>")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="↩️ رجوع إلى شاراتي", callback_data=f"badges:hub:{role}:{sid}")],
+    ])
+    try:
+        await cb.message.edit_text("\n".join(lines), reply_markup=kb)
+    except Exception:
+        await cb.message.answer("\n".join(lines), reply_markup=kb)
+    await cb.answer()
 
 
 # ════════════════════════════════════════════════════════════════════
